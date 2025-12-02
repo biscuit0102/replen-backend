@@ -1,0 +1,34 @@
+# ReplenMobile Backend Dependencies
+
+# Web Framework
+fastapi==0.109.0
+uvicorn[standard]==0.27.0
+
+# Data Validation
+pydantic==2.5.3
+
+# Environment Variables
+python-dotenv==1.0.0
+
+# HTTP Client
+httpx==0.26.0
+aiohttp==3.9.1
+
+# OpenAI SDK
+openai==1.10.0
+
+# PDF Generation
+reportlab==4.0.8
+
+# ClickSend Client (for FAX)
+clicksend-client==5.0.78
+
+# Email - Resend API (optional, can also use SMTP)
+resend==0.7.0
+
+# LINE Messaging API
+line-bot-sdk==3.5.0
+
+# Optional: PDF manipulation for hanko overlay
+# pypdf2==3.0.1
+# pillow==10.2.0
