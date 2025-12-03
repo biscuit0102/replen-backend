@@ -15,18 +15,25 @@ from reportlab.lib.units import mm
 from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer, Image
 from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfbase.ttfonts import TTFont
+from reportlab.lib.utils import simpleSplit
 from pydantic import BaseModel
 import httpx
 
 # Try to register Japanese font
-try:
-    FONT_PATH = os.path.join(os.path.dirname(__file__), "..", "fonts", "ipaexg.ttf")
-    if os.path.exists(FONT_PATH):
+# Use absolute path to ensure font is found regardless of working directory
+BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))  # Goes up to /backend
+FONT_PATH = os.path.join(BASE_DIR, "fonts", "ipaexg.ttf")
+
+if os.path.exists(FONT_PATH):
+    try:
         pdfmetrics.registerFont(TTFont('JPN', FONT_PATH))
         JAPANESE_FONT = 'JPN'
-    else:
-        JAPANESE_FONT = 'Helvetica'  # Fallback
-except Exception:
+        print(f"SUCCESS: Japanese font loaded from {FONT_PATH}")
+    except Exception as e:
+        print(f"ERROR: Failed to register font: {e}")
+        JAPANESE_FONT = 'Helvetica'
+else:
+    print(f"WARNING: Font not found at {FONT_PATH}, falling back to Helvetica")
     JAPANESE_FONT = 'Helvetica'
 
 # ClickSend API configuration
@@ -53,7 +60,8 @@ class OrderSendResponse(BaseModel):
 def generate_pdf(
     items: List[OrderItem],
     supplier_name: Optional[str] = None,
-    hanko_url: Optional[str] = None
+    hanko_url: Optional[str] = None,
+    note: Optional[str] = None
 ) -> str:
     """
     Generate a PDF invoice for faxing.
@@ -62,6 +70,7 @@ def generate_pdf(
         items: List of order items
         supplier_name: Name of the supplier (displayed on invoice)
         hanko_url: URL to hanko image for stamping
+        note: Optional user memo (備考)
         
     Returns:
         Path to generated PDF file
@@ -168,7 +177,46 @@ def generate_pdf(
     ]))
     
     elements.append(table)
-    elements.append(Spacer(1, 15*mm))
+    elements.append(Spacer(1, 10*mm))
+    
+    # Notes box (備考欄)
+    note_content = note.strip() if note and note.strip() else "特になし"
+    
+    # Create notes box using a table with border
+    note_header_style = ParagraphStyle(
+        'NoteHeader',
+        parent=styles['Normal'],
+        fontName=JAPANESE_FONT,
+        fontSize=10,
+        textColor=colors.black,
+        spaceAfter=3*mm
+    )
+    
+    note_content_style = ParagraphStyle(
+        'NoteContent',
+        parent=styles['Normal'],
+        fontName=JAPANESE_FONT,
+        fontSize=9,
+        leading=14,  # Line height for readability
+    )
+    
+    # Wrap long note text
+    note_paragraph = Paragraph(f"■ 備考 (Notes):<br/><br/>{note_content}", note_content_style)
+    
+    # Create the notes box as a table with border
+    notes_table_data = [[note_paragraph]]
+    notes_table = Table(notes_table_data, colWidths=[170*mm])
+    notes_table.setStyle(TableStyle([
+        ('BOX', (0, 0), (-1, -1), 1, colors.black),  # Border
+        ('TOPPADDING', (0, 0), (-1, -1), 8),
+        ('BOTTOMPADDING', (0, 0), (-1, -1), 8),
+        ('LEFTPADDING', (0, 0), (-1, -1), 10),
+        ('RIGHTPADDING', (0, 0), (-1, -1), 10),
+        ('VALIGN', (0, 0), (-1, -1), 'TOP'),
+    ]))
+    
+    elements.append(notes_table)
+    elements.append(Spacer(1, 10*mm))
     
     # Footer note
     elements.append(Paragraph("よろしくお願いいたします。", normal_style))
@@ -185,14 +233,76 @@ def generate_pdf(
 
 def _add_hanko_stamp(pdf_path: str, hanko_url: str):
     """
-    Add hanko stamp to PDF (overlay on bottom right).
-    
-    Note: This is a simplified version. Full implementation would use
-    PyPDF2 or pikepdf to overlay the image.
+    Add hanko stamp to PDF (overlay on right side of sender name).
+    Uses PyPDF2 and Pillow to overlay PNG with transparency.
     """
-    # For now, just log that we would add the stamp
-    print(f"Would add hanko from: {hanko_url}")
-    # TODO: Implement actual hanko overlay using PyPDF2
+    import requests
+    from PyPDF2 import PdfReader, PdfWriter
+    from PIL import Image
+    import io
+
+    # Download hanko image
+    response = requests.get(hanko_url)
+    if response.status_code != 200:
+        print(f"Failed to download hanko image: {hanko_url}")
+        return
+    hanko_img = Image.open(io.BytesIO(response.content)).convert("RGBA")
+
+    # Scale to 1.5cm x 1.5cm (about 43x43 pixels at 300dpi)
+    target_size_px = int(1.5 / 2.54 * 300)  # 1.5cm in pixels at 300dpi
+    hanko_img = hanko_img.resize((target_size_px, target_size_px), Image.LANCZOS)
+
+    # Read PDF
+    reader = PdfReader(pdf_path)
+    page = reader.pages[0]
+
+    # Calculate position: right side of sender name (approximate)
+    # A4: 595x842 points. Place stamp at (x, y) near top right, below title and date
+    x = 420  # points from left
+    y = 730  # points from bottom
+
+    # Convert hanko image to bytes
+    img_byte_arr = io.BytesIO()
+    hanko_img.save(img_byte_arr, format='PNG')
+    img_byte_arr.seek(0)
+
+    # Overlay image using PyPDF2 (add as XObject)
+    from PyPDF2.generic import NameObject, DictionaryObject, StreamObject
+    from PyPDF2.pdf import PageObject
+    from PyPDF2.utils import b_ as py_b_
+
+    # Create XObject for image
+    img_data = img_byte_arr.read()
+    img_stream = StreamObject()
+    img_stream._data = py_b_(img_data)
+    img_stream.update({
+        NameObject('/Type'): NameObject('/XObject'),
+        NameObject('/Subtype'): NameObject('/Image'),
+        NameObject('/Width'): target_size_px,
+        NameObject('/Height'): target_size_px,
+        NameObject('/ColorSpace'): NameObject('/DeviceRGB'),
+        NameObject('/BitsPerComponent'): 8,
+        NameObject('/Filter'): NameObject('/FlateDecode'),
+    })
+
+    # Add image to page resources
+    xobj_name = NameObject('/HankoStamp')
+    if '/XObject' not in page['/Resources']:
+        page['/Resources'][NameObject('/XObject')] = DictionaryObject()
+    page['/Resources']['/XObject'][xobj_name] = img_stream
+
+    # Add stamp to content stream
+    stamp_cmd = f"q\n{target_size_px} 0 0 {target_size_px} {x} {y} cm\n/HankoStamp Do\nQ\n"
+    if '/Contents' in page:
+        orig_content = page['/Contents'].get_data().decode('latin1')
+        new_content = orig_content + stamp_cmd
+        page['/Contents']._data = py_b_(new_content)
+
+    # Write new PDF
+    writer = PdfWriter()
+    writer.add_page(page)
+    with open(pdf_path, 'wb') as f:
+        writer.write(f)
 
 
 def send_fax(pdf_path: str, fax_number: str) -> OrderSendResponse:

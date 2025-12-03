@@ -41,6 +41,7 @@ class EmailSendResult(BaseModel):
 def generate_order_html(
     items: List[OrderItem],
     supplier_name: Optional[str] = None,
+    note: Optional[str] = None,
 ) -> str:
     """
     Generate HTML email body for the order.
@@ -49,6 +50,7 @@ def generate_order_html(
     
     today = datetime.now().strftime("%Y年%m月%d日")
     total = sum(item.price * item.quantity for item in items)
+    note_content = note.strip() if note and note.strip() else "特になし"
     
     # Build items table rows
     items_html = ""
@@ -109,6 +111,11 @@ def generate_order_html(
             </table>
         </div>
         
+        <div style="padding: 20px; border: 1px solid #eee; border-top: none; background: #fff;">
+            <h3 style="margin: 0 0 10px 0; color: #1A237E; font-size: 14px;">■ 備考 (Notes)</h3>
+            <p style="margin: 0; color: #333; white-space: pre-wrap;">{note_content}</p>
+        </div>
+        
         <div style="background: #f8f9fa; padding: 20px; border: 1px solid #eee; border-top: none; border-radius: 0 0 12px 12px;">
             <p style="margin: 0; color: #666;">よろしくお願いいたします。</p>
             <p style="margin: 10px 0 0 0; color: #999; font-size: 12px;">
@@ -124,6 +131,7 @@ def generate_order_html(
 def generate_order_text(
     items: List[OrderItem],
     supplier_name: Optional[str] = None,
+    note: Optional[str] = None,
 ) -> str:
     """
     Generate plain text email body for the order.
@@ -132,6 +140,7 @@ def generate_order_text(
     
     today = datetime.now().strftime("%Y年%m月%d日")
     total = sum(item.price * item.quantity for item in items)
+    note_content = note.strip() if note and note.strip() else "特になし"
     
     lines = [
         "=" * 40,
@@ -153,6 +162,11 @@ def generate_order_text(
     
     lines.append("-" * 40)
     lines.append(f"合計: ¥{total:,}")
+    lines.append("")
+    lines.append("-" * 40)
+    lines.append("■ 備考 (Notes)")
+    lines.append(note_content)
+    lines.append("-" * 40)
     lines.append("")
     lines.append("よろしくお願いいたします。")
     lines.append("")
@@ -296,6 +310,7 @@ async def send_order_email(
     items: List[OrderItem],
     supplier_name: Optional[str] = None,
     pdf_path: Optional[str] = None,
+    note: Optional[str] = None,
 ) -> EmailSendResult:
     """
     Send order via email with optional PDF attachment.
@@ -305,13 +320,14 @@ async def send_order_email(
         items: List of order items
         supplier_name: Name of the supplier
         pdf_path: Optional path to PDF file to attach
+        note: Optional user memo (備考)
     
     Returns:
         EmailSendResult with success status
     """
     subject = f"【注文書】{supplier_name or 'ReplenMobile'} 宛"
-    html_body = generate_order_html(items, supplier_name)
-    text_body = generate_order_text(items, supplier_name)
+    html_body = generate_order_html(items, supplier_name, note)
+    text_body = generate_order_text(items, supplier_name, note)
     
     # Read PDF if provided
     pdf_attachment = None

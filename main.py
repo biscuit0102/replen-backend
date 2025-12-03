@@ -51,6 +51,7 @@ class OrderRequest(BaseModel):
     supplier_fax: str
     supplier_name: Optional[str] = None
     hanko_url: Optional[str] = None
+    note: Optional[str] = None  # User memo (備考)
 
 class MultiChannelOrderRequest(BaseModel):
     """Request to send an order via any channel (FAX, Email, LINE)"""
@@ -66,6 +67,7 @@ class MultiChannelOrderRequest(BaseModel):
     # Optional
     hanko_url: Optional[str] = None
     order_id: Optional[str] = None  # For reference tracking
+    note: Optional[str] = None  # User memo (備考)
 
 class InvoiceParseRequest(BaseModel):
     """Request to parse an invoice image"""
@@ -170,7 +172,8 @@ async def api_send_order(request: OrderRequest):
         pdf_path = generate_pdf(
             items=request.items,
             supplier_name=request.supplier_name,
-            hanko_url=request.hanko_url
+            hanko_url=request.hanko_url,
+            note=request.note
         )
         
         # Send fax
@@ -225,7 +228,8 @@ async def api_send_order_multi(request: MultiChannelOrderRequest):
             pdf_path = generate_pdf(
                 items=request.items,
                 supplier_name=request.supplier_name,
-                hanko_url=request.hanko_url
+                hanko_url=request.hanko_url,
+                note=request.note
             )
             
             # Send fax
@@ -267,7 +271,8 @@ async def api_send_order_multi(request: MultiChannelOrderRequest):
                 pdf_path = generate_pdf(
                     items=request.items,
                     supplier_name=request.supplier_name,
-                    hanko_url=request.hanko_url
+                    hanko_url=request.hanko_url,
+                    note=request.note
                 )
             except Exception:
                 pass  # PDF is optional for email
@@ -276,9 +281,9 @@ async def api_send_order_multi(request: MultiChannelOrderRequest):
             result = await send_order_email(
                 items=email_items,
                 supplier_name=request.supplier_name,
-                supplier_email=request.email,
+                to_email=request.email,
                 pdf_path=pdf_path,
-                order_id=request.order_id
+                note=request.note
             )
             
             # Clean up PDF file
