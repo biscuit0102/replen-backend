@@ -204,9 +204,13 @@ async def api_send_order(request: OrderRequest):
         if os.path.exists(pdf_path):
             os.remove(pdf_path)
         
-        # send_fax returns OrderSendResponse directly
-        result.method_used = "fax"
-        return result
+        # Return response with method_used
+        return OrderSendResponse(
+            success=result.success,
+            message=result.message,
+            confirmation_id=result.confirmation_id,
+            method_used="fax"
+        )
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to send order: {str(e)}")
 
