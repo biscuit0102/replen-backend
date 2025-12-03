@@ -25,5 +25,5 @@ RUN mkdir -p fonts && \
 ENV PORT=8000
 EXPOSE 8000
 
-# Run the application - use shell form to expand $PORT
-CMD uvicorn main:app --host 0.0.0.0 --port $PORT
+# Run the application - use exec form with shell to expand $PORT
+CMD ["sh", "-c", "uvicorn main:app --host 0.0.0.0 --port ${PORT}"]
