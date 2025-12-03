@@ -2,6 +2,7 @@
 # FastAPI server for AI invoice parsing, barcode lookup, and multi-channel order sending
 
 from fastapi import FastAPI, HTTPException
+from fastapi.responses import FileResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import List, Optional, Literal
@@ -213,6 +214,46 @@ async def api_send_order(request: OrderRequest):
         )
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to send order: {str(e)}")
+
+
+class PreviewPdfRequest(BaseModel):
+    """Request to generate PDF preview (without sending)"""
+    items: List[OrderItem]
+    supplier_name: Optional[str] = None
+    hanko_url: Optional[str] = None
+    note: Optional[str] = None
+    sender_name: Optional[str] = None
+    sender_phone: Optional[str] = None
+
+
+@app.post("/api/preview-pdf")
+async def api_preview_pdf(request: PreviewPdfRequest):
+    """
+    Generate a PDF preview of the order (with hanko) without sending.
+    
+    Returns the PDF file directly for download.
+    Use this for email sharing via native share sheet.
+    """
+    try:
+        # Generate PDF with hanko
+        pdf_path = generate_pdf(
+            items=request.items,
+            supplier_name=request.supplier_name,
+            hanko_url=request.hanko_url,
+            note=request.note,
+            sender_name=request.sender_name,
+            sender_phone=request.sender_phone,
+        )
+        
+        # Return PDF file
+        return FileResponse(
+            path=pdf_path,
+            media_type="application/pdf",
+            filename=f"order_{request.supplier_name or 'preview'}.pdf",
+            background=None  # Don't delete file in background
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to generate PDF: {str(e)}")
 
 
 @app.post("/api/send-order-multi", response_model=OrderSendResponse)

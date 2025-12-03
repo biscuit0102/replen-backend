@@ -299,11 +299,13 @@ def generate_pdf(
 def _add_hanko_stamp(pdf_path: str, hanko_url: str):
     """
     Add hanko stamp to PDF (overlay on right side of sender name).
-    Uses PyPDF2 and Pillow to overlay PNG with transparency.
+    Uses PyPDF2 to merge a hanko overlay PDF.
     """
     import requests
     from PyPDF2 import PdfReader, PdfWriter
     from PIL import Image
+    from reportlab.pdfgen import canvas
+    from reportlab.lib.pagesizes import A4
     import io
 
     # Download hanko image
@@ -313,61 +315,46 @@ def _add_hanko_stamp(pdf_path: str, hanko_url: str):
         return
     hanko_img = Image.open(io.BytesIO(response.content)).convert("RGBA")
 
-    # Scale to 1.5cm x 1.5cm (about 43x43 pixels at 300dpi)
-    target_size_px = int(1.5 / 2.54 * 300)  # 1.5cm in pixels at 300dpi
-    hanko_img = hanko_img.resize((target_size_px, target_size_px), Image.LANCZOS)
+    # Scale to 1.5cm x 1.5cm (about 43 points in PDF)
+    stamp_size = 43  # points (1.5cm)
+    
+    # Position: right side of sender info area
+    # A4: 595x842 points. Place stamp near sender name
+    x = 480  # points from left
+    y = 735  # points from bottom
 
-    # Read PDF
-    reader = PdfReader(pdf_path)
-    page = reader.pages[0]
+    # Create overlay PDF with just the hanko
+    overlay_buffer = io.BytesIO()
+    c = canvas.Canvas(overlay_buffer, pagesize=A4)
+    
+    # Save hanko image to temp buffer
+    img_buffer = io.BytesIO()
+    hanko_img.save(img_buffer, format='PNG')
+    img_buffer.seek(0)
+    
+    # Draw hanko on overlay
+    from reportlab.lib.utils import ImageReader
+    c.drawImage(ImageReader(img_buffer), x, y, width=stamp_size, height=stamp_size, mask='auto')
+    c.save()
+    overlay_buffer.seek(0)
 
-    # Calculate position: right side of sender name (approximate)
-    # A4: 595x842 points. Place stamp at (x, y) near top right, below title and date
-    x = 420  # points from left
-    y = 730  # points from bottom
-
-    # Convert hanko image to bytes
-    img_byte_arr = io.BytesIO()
-    hanko_img.save(img_byte_arr, format='PNG')
-    img_byte_arr.seek(0)
-
-    # Overlay image using PyPDF2 (add as XObject)
-    from PyPDF2.generic import NameObject, DictionaryObject, StreamObject
-    from PyPDF2.pdf import PageObject
-    from PyPDF2.utils import b_ as py_b_
-
-    # Create XObject for image
-    img_data = img_byte_arr.read()
-    img_stream = StreamObject()
-    img_stream._data = py_b_(img_data)
-    img_stream.update({
-        NameObject('/Type'): NameObject('/XObject'),
-        NameObject('/Subtype'): NameObject('/Image'),
-        NameObject('/Width'): target_size_px,
-        NameObject('/Height'): target_size_px,
-        NameObject('/ColorSpace'): NameObject('/DeviceRGB'),
-        NameObject('/BitsPerComponent'): 8,
-        NameObject('/Filter'): NameObject('/FlateDecode'),
-    })
-
-    # Add image to page resources
-    xobj_name = NameObject('/HankoStamp')
-    if '/XObject' not in page['/Resources']:
-        page['/Resources'][NameObject('/XObject')] = DictionaryObject()
-    page['/Resources']['/XObject'][xobj_name] = img_stream
-
-    # Add stamp to content stream
-    stamp_cmd = f"q\n{target_size_px} 0 0 {target_size_px} {x} {y} cm\n/HankoStamp Do\nQ\n"
-    if '/Contents' in page:
-        orig_content = page['/Contents'].get_data().decode('latin1')
-        new_content = orig_content + stamp_cmd
-        page['/Contents']._data = py_b_(new_content)
-
-    # Write new PDF
+    # Merge overlay onto original PDF
+    original = PdfReader(pdf_path)
+    overlay = PdfReader(overlay_buffer)
+    
     writer = PdfWriter()
+    page = original.pages[0]
+    page.merge_page(overlay.pages[0])
     writer.add_page(page)
+    
+    # Add remaining pages if any
+    for i in range(1, len(original.pages)):
+        writer.add_page(original.pages[i])
+    
     with open(pdf_path, 'wb') as f:
         writer.write(f)
+    
+    print(f"Hanko stamp added to PDF at position ({x}, {y})")
 
 
 def send_fax(pdf_path: str, fax_number: str) -> OrderSendResponse:
