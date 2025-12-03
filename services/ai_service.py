@@ -4,12 +4,22 @@
 import os
 import json
 import base64
-from typing import List
+from typing import List, Optional
 from openai import AsyncOpenAI
 from pydantic import BaseModel
 
-# Initialize OpenAI client
-client = AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+# Lazy initialization of OpenAI client
+_client: Optional[AsyncOpenAI] = None
+
+def get_openai_client() -> AsyncOpenAI:
+    """Get or create OpenAI client (lazy initialization)."""
+    global _client
+    if _client is None:
+        api_key = os.getenv("OPENAI_API_KEY")
+        if not api_key:
+            raise RuntimeError("OPENAI_API_KEY environment variable is not set")
+        _client = AsyncOpenAI(api_key=api_key)
+    return _client
 
 class ParsedItem(BaseModel):
     """Parsed item from invoice"""
@@ -55,6 +65,7 @@ async def parse_invoice(base64_image: str) -> List[ParsedItem]:
             # Detect image type (default to jpeg)
             base64_image = f"data:image/jpeg;base64,{base64_image}"
         
+        client = get_openai_client()
         response = await client.chat.completions.create(
             model="gpt-4o",
             messages=[
