@@ -125,3 +125,4 @@ Supported contact methods:
 | ClickSend | FAX sending | https://clicksend.com/ |
 | Resend | Email sending | https://resend.com/ |
 | LINE | LINE messaging | https://developers.line.biz/
+# Trigger redeploy Wed Dec  3 14:02:41 JST 2025
