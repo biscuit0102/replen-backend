@@ -21,9 +21,8 @@ RUN mkdir -p fonts && \
      cp /usr/share/fonts/truetype/ipafont-gothic/ipag.ttf fonts/ipaexg.ttf 2>/dev/null || \
      echo "Font not found, will use fallback")
 
-# Railway uses PORT env variable
-ENV PORT=8000
-EXPOSE 8000
+# Railway sets PORT env variable dynamically
+# Don't set a default - Railway will provide it
 
-# Run the application - use exec form with shell to expand $PORT
-CMD ["sh", "-c", "uvicorn main:app --host 0.0.0.0 --port ${PORT}"]
+# Run the application
+CMD ["sh", "-c", "uvicorn main:app --host 0.0.0.0 --port ${PORT:-8000}"]
