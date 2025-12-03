@@ -52,6 +52,8 @@ class OrderRequest(BaseModel):
     supplier_name: Optional[str] = None
     hanko_url: Optional[str] = None
     note: Optional[str] = None  # User memo (備考)
+    sender_name: Optional[str] = None  # Ordering company/store name
+    sender_phone: Optional[str] = None  # Callback phone number
 
 class MultiChannelOrderRequest(BaseModel):
     """Request to send an order via any channel (FAX, Email, LINE)"""
@@ -68,6 +70,8 @@ class MultiChannelOrderRequest(BaseModel):
     hanko_url: Optional[str] = None
     order_id: Optional[str] = None  # For reference tracking
     note: Optional[str] = None  # User memo (備考)
+    sender_name: Optional[str] = None  # Ordering company/store name
+    sender_phone: Optional[str] = None  # Callback phone number
 
 class InvoiceParseRequest(BaseModel):
     """Request to parse an invoice image"""
@@ -173,7 +177,9 @@ async def api_send_order(request: OrderRequest):
             items=request.items,
             supplier_name=request.supplier_name,
             hanko_url=request.hanko_url,
-            note=request.note
+            note=request.note,
+            sender_name=request.sender_name,
+            sender_phone=request.sender_phone,
         )
         
         # Send fax
@@ -229,7 +235,9 @@ async def api_send_order_multi(request: MultiChannelOrderRequest):
                 items=request.items,
                 supplier_name=request.supplier_name,
                 hanko_url=request.hanko_url,
-                note=request.note
+                note=request.note,
+                sender_name=request.sender_name,
+                sender_phone=request.sender_phone,
             )
             
             # Send fax
@@ -272,7 +280,9 @@ async def api_send_order_multi(request: MultiChannelOrderRequest):
                     items=request.items,
                     supplier_name=request.supplier_name,
                     hanko_url=request.hanko_url,
-                    note=request.note
+                    note=request.note,
+                    sender_name=request.sender_name,
+                    sender_phone=request.sender_phone,
                 )
             except Exception:
                 pass  # PDF is optional for email

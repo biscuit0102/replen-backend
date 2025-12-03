@@ -61,7 +61,9 @@ def generate_pdf(
     items: List[OrderItem],
     supplier_name: Optional[str] = None,
     hanko_url: Optional[str] = None,
-    note: Optional[str] = None
+    note: Optional[str] = None,
+    sender_name: Optional[str] = None,
+    sender_phone: Optional[str] = None,
 ) -> str:
     """
     Generate a PDF invoice for faxing.
@@ -71,6 +73,8 @@ def generate_pdf(
         supplier_name: Name of the supplier (displayed on invoice)
         hanko_url: URL to hanko image for stamping
         note: Optional user memo (備考)
+        sender_name: Name of the ordering company/store
+        sender_phone: Phone number for callbacks
         
     Returns:
         Path to generated PDF file
@@ -85,48 +89,105 @@ def generate_pdf(
         pagesize=A4,
         rightMargin=20*mm,
         leftMargin=20*mm,
-        topMargin=20*mm,
-        bottomMargin=20*mm
+        topMargin=15*mm,
+        bottomMargin=15*mm
     )
     
     # Build content
     elements = []
     styles = getSampleStyleSheet()
     
-    # Custom styles for Japanese text
+    # ===================
+    # FAX-SAFE STYLES (Black text on white background - no colors!)
+    # ===================
+    
     title_style = ParagraphStyle(
         'JapaneseTitle',
         parent=styles['Heading1'],
         fontName=JAPANESE_FONT,
-        fontSize=24,
+        fontSize=28,
         alignment=1,  # Center
-        spaceAfter=10*mm
+        spaceAfter=5*mm,
+        textColor=colors.black,
+    )
+    
+    # Large bold style for sender info (CRITICAL for fax identification)
+    sender_style = ParagraphStyle(
+        'SenderInfo',
+        parent=styles['Normal'],
+        fontName=JAPANESE_FONT,
+        fontSize=14,
+        leading=20,
+        textColor=colors.black,
+        alignment=2,  # Right align
     )
     
     normal_style = ParagraphStyle(
         'JapaneseNormal',
         parent=styles['Normal'],
         fontName=JAPANESE_FONT,
-        fontSize=10
+        fontSize=10,
+        textColor=colors.black,
     )
     
-    # Header
-    elements.append(Paragraph("注文書", title_style))
-    elements.append(Spacer(1, 5*mm))
+    recipient_style = ParagraphStyle(
+        'Recipient',
+        parent=styles['Normal'],
+        fontName=JAPANESE_FONT,
+        fontSize=12,
+        textColor=colors.black,
+    )
     
-    # Date and order info
+    # ===================
+    # HEADER: Title
+    # ===================
+    elements.append(Paragraph("注 文 書", title_style))
+    elements.append(Spacer(1, 3*mm))
+    
+    # ===================
+    # SENDER INFO (Top Right - LARGE and BOLD for easy identification)
+    # ===================
     today = datetime.now().strftime("%Y年%m月%d日")
-    elements.append(Paragraph(f"日付: {today}", normal_style))
     
+    # Build sender block (right-aligned)
+    sender_block = f"<b>発注元:</b><br/>"
+    if sender_name:
+        sender_block += f"<b>{sender_name}</b><br/>"
+    else:
+        sender_block += "<b>ReplenMobile ユーザー</b><br/>"
+    if sender_phone:
+        sender_block += f"TEL: {sender_phone}<br/>"
+    sender_block += f"日付: {today}"
+    
+    # Create a 2-column layout: Recipient (left) | Sender (right)
+    # This ensures both are visible at a glance
+    recipient_text = ""
     if supplier_name:
-        elements.append(Paragraph(f"宛先: {supplier_name} 御中", normal_style))
+        recipient_text = f"<b>{supplier_name} 御中</b>"
     
-    elements.append(Spacer(1, 10*mm))
+    header_table = Table(
+        [[Paragraph(recipient_text, recipient_style), Paragraph(sender_block, sender_style)]],
+        colWidths=[90*mm, 80*mm]
+    )
+    header_table.setStyle(TableStyle([
+        ('VALIGN', (0, 0), (-1, -1), 'TOP'),
+        ('ALIGN', (0, 0), (0, 0), 'LEFT'),
+        ('ALIGN', (1, 0), (1, 0), 'RIGHT'),
+    ]))
+    elements.append(header_table)
+    elements.append(Spacer(1, 8*mm))
     
-    # Calculate totals
+    # ===================
+    # GREETING
+    # ===================
+    elements.append(Paragraph("いつもお世話になっております。下記の通りご注文申し上げます。", normal_style))
+    elements.append(Spacer(1, 6*mm))
+    
+    # ===================
+    # ORDER ITEMS TABLE (FAX-SAFE: Black text, white background, black borders)
+    # ===================
     total_amount = sum(item.price * item.quantity for item in items)
     
-    # Order items table
     table_data = [
         ["No.", "商品名", "単価", "数量", "金額"]
     ]
@@ -144,70 +205,72 @@ def generate_pdf(
     # Add total row
     table_data.append(["", "", "", "合計", f"¥{total_amount:,}"])
     
-    # Create and style table
-    table = Table(table_data, colWidths=[15*mm, 80*mm, 25*mm, 20*mm, 30*mm])
+    # Create table with FAX-SAFE styling (no colored backgrounds!)
+    table = Table(table_data, colWidths=[12*mm, 85*mm, 25*mm, 18*mm, 30*mm])
     table.setStyle(TableStyle([
-        # Header row
-        ('BACKGROUND', (0, 0), (-1, 0), colors.Color(0.1, 0.14, 0.49)),  # Navy blue
-        ('TEXTCOLOR', (0, 0), (-1, 0), colors.white),
+        # Header row - WHITE background, BLACK text, BLACK border
+        ('BACKGROUND', (0, 0), (-1, 0), colors.white),
+        ('TEXTCOLOR', (0, 0), (-1, 0), colors.black),
         ('FONTNAME', (0, 0), (-1, 0), JAPANESE_FONT),
         ('FONTSIZE', (0, 0), (-1, 0), 10),
         ('ALIGN', (0, 0), (-1, 0), 'CENTER'),
         ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
         ('BOTTOMPADDING', (0, 0), (-1, 0), 8),
         ('TOPPADDING', (0, 0), (-1, 0), 8),
+        ('LINEBELOW', (0, 0), (-1, 0), 1.5, colors.black),  # Thick line under header
+        ('LINEABOVE', (0, 0), (-1, 0), 1.5, colors.black),  # Thick line above header
         
         # Data rows
+        ('BACKGROUND', (0, 1), (-1, -1), colors.white),
+        ('TEXTCOLOR', (0, 1), (-1, -1), colors.black),
         ('FONTNAME', (0, 1), (-1, -1), JAPANESE_FONT),
         ('FONTSIZE', (0, 1), (-1, -1), 9),
-        ('ALIGN', (0, 1), (0, -1), 'CENTER'),  # No. column
-        ('ALIGN', (2, 1), (-1, -1), 'RIGHT'),  # Price columns
+        ('ALIGN', (0, 1), (0, -1), 'CENTER'),  # No. column centered
+        ('ALIGN', (2, 1), (-1, -1), 'RIGHT'),  # Price columns right-aligned
         ('BOTTOMPADDING', (0, 1), (-1, -1), 6),
         ('TOPPADDING', (0, 1), (-1, -1), 6),
         
-        # Total row
+        # Total row - slightly bold
         ('FONTNAME', (0, -1), (-1, -1), JAPANESE_FONT),
         ('FONTSIZE', (0, -1), (-1, -1), 11),
-        ('BACKGROUND', (3, -1), (-1, -1), colors.Color(0.95, 0.95, 0.95)),
-        
-        # Grid
-        ('GRID', (0, 0), (-1, -2), 0.5, colors.grey),
-        ('LINEBELOW', (0, -1), (-1, -1), 1, colors.black),
         ('LINEABOVE', (0, -1), (-1, -1), 1, colors.black),
+        ('LINEBELOW', (0, -1), (-1, -1), 1.5, colors.black),  # Thick bottom line
+        
+        # Vertical grid lines
+        ('LINEBEFORE', (0, 0), (0, -1), 1, colors.black),  # Left edge
+        ('LINEAFTER', (-1, 0), (-1, -1), 1, colors.black),  # Right edge
+        ('LINEBEFORE', (1, 0), (1, -1), 0.5, colors.black),
+        ('LINEBEFORE', (2, 0), (2, -1), 0.5, colors.black),
+        ('LINEBEFORE', (3, 0), (3, -1), 0.5, colors.black),
+        ('LINEBEFORE', (4, 0), (4, -1), 0.5, colors.black),
+        
+        # Horizontal lines for data rows
+        ('LINEBELOW', (0, 1), (-1, -2), 0.5, colors.grey),
     ]))
     
     elements.append(table)
-    elements.append(Spacer(1, 10*mm))
+    elements.append(Spacer(1, 8*mm))
     
-    # Notes box (備考欄)
+    # ===================
+    # NOTES BOX (備考欄)
+    # ===================
     note_content = note.strip() if note and note.strip() else "特になし"
-    
-    # Create notes box using a table with border
-    note_header_style = ParagraphStyle(
-        'NoteHeader',
-        parent=styles['Normal'],
-        fontName=JAPANESE_FONT,
-        fontSize=10,
-        textColor=colors.black,
-        spaceAfter=3*mm
-    )
     
     note_content_style = ParagraphStyle(
         'NoteContent',
         parent=styles['Normal'],
         fontName=JAPANESE_FONT,
         fontSize=9,
-        leading=14,  # Line height for readability
+        leading=14,
+        textColor=colors.black,
     )
     
-    # Wrap long note text
-    note_paragraph = Paragraph(f"■ 備考 (Notes):<br/><br/>{note_content}", note_content_style)
+    note_paragraph = Paragraph(f"<b>■ 備考:</b><br/>{note_content}", note_content_style)
     
-    # Create the notes box as a table with border
-    notes_table_data = [[note_paragraph]]
-    notes_table = Table(notes_table_data, colWidths=[170*mm])
+    notes_table = Table([[note_paragraph]], colWidths=[170*mm])
     notes_table.setStyle(TableStyle([
-        ('BOX', (0, 0), (-1, -1), 1, colors.black),  # Border
+        ('BOX', (0, 0), (-1, -1), 1, colors.black),
+        ('BACKGROUND', (0, 0), (-1, -1), colors.white),
         ('TOPPADDING', (0, 0), (-1, -1), 8),
         ('BOTTOMPADDING', (0, 0), (-1, -1), 8),
         ('LEFTPADDING', (0, 0), (-1, -1), 10),
@@ -218,8 +281,10 @@ def generate_pdf(
     elements.append(notes_table)
     elements.append(Spacer(1, 10*mm))
     
-    # Footer note
-    elements.append(Paragraph("よろしくお願いいたします。", normal_style))
+    # ===================
+    # CLOSING
+    # ===================
+    elements.append(Paragraph("以上、よろしくお願い申し上げます。", normal_style))
     
     # Build PDF
     doc.build(elements)
