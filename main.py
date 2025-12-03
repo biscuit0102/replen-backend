@@ -16,6 +16,7 @@ from services.ai_service import parse_invoice
 from services.product_service import lookup_barcode
 from services.fax_service import generate_pdf, send_fax
 from services.email_service import send_order_email, OrderItem as EmailOrderItem
+from services.hanko_service import create_hanko_image
 # LINE is handled by Flutter app via Deep Link - no backend needed
 
 # Initialize FastAPI app
@@ -103,6 +104,17 @@ class OrderSendResponse(BaseModel):
     message: str
     confirmation_id: Optional[str] = None
     method_used: Optional[str] = None
+
+class HankoRequest(BaseModel):
+    """Request to generate a company seal (hanko)"""
+    text: str  # 1-4 Japanese characters
+    user_id: str  # Supabase user ID
+
+class HankoResponse(BaseModel):
+    """Response from hanko generation"""
+    success: bool
+    hanko_url: Optional[str] = None
+    message: str
 
 # ===================
 # Health Check
@@ -325,6 +337,118 @@ async def api_send_order_multi(request: MultiChannelOrderRequest):
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"注文送信に失敗しました: {str(e)}")
+
+
+# ===================
+# Hanko (Company Seal) Endpoint
+# ===================
+
+@app.post("/api/generate-hanko", response_model=HankoResponse)
+async def api_generate_hanko(request: HankoRequest):
+    """
+    Generate a digital company seal (電子印鑑/hanko).
+    
+    Creates a traditional Japanese seal image with the provided text (1-4 characters),
+    uploads it to Supabase Storage, and updates the user's profile with the URL.
+    """
+    import base64
+    import httpx
+    import uuid
+    
+    # Validate text
+    text = request.text.strip()
+    if not text:
+        raise HTTPException(status_code=400, detail="印鑑のテキストが必要です")
+    if len(text) > 4:
+        raise HTTPException(status_code=400, detail="テキストは4文字以内にしてください")
+    
+    try:
+        # Generate hanko image
+        image_bytes = create_hanko_image(text)
+        image_data = image_bytes.getvalue()
+        
+        # Get Supabase credentials
+        supabase_url = os.getenv("SUPABASE_URL")
+        supabase_key = os.getenv("SUPABASE_SERVICE_KEY") or os.getenv("SUPABASE_ANON_KEY")
+        
+        if not supabase_url or not supabase_key:
+            # Dev mode - return base64 image URL
+            b64_image = base64.b64encode(image_data).decode('utf-8')
+            data_url = f"data:image/png;base64,{b64_image}"
+            return HankoResponse(
+                success=True,
+                hanko_url=data_url,
+                message="[DEV MODE] 印鑑を生成しました（Supabase未設定）"
+            )
+        
+        # Upload to Supabase Storage
+        bucket_name = "company-assets"
+        file_name = f"hanko/{request.user_id}/{uuid.uuid4().hex}.png"
+        
+        async with httpx.AsyncClient() as client:
+            # Upload file
+            upload_response = await client.post(
+                f"{supabase_url}/storage/v1/object/{bucket_name}/{file_name}",
+                headers={
+                    "Authorization": f"Bearer {supabase_key}",
+                    "Content-Type": "image/png",
+                    "x-upsert": "true",  # Overwrite if exists
+                },
+                content=image_data
+            )
+            
+            if upload_response.status_code not in [200, 201]:
+                # Try creating bucket if it doesn't exist
+                await client.post(
+                    f"{supabase_url}/storage/v1/bucket",
+                    headers={
+                        "Authorization": f"Bearer {supabase_key}",
+                        "Content-Type": "application/json",
+                    },
+                    json={"id": bucket_name, "name": bucket_name, "public": True}
+                )
+                # Retry upload
+                upload_response = await client.post(
+                    f"{supabase_url}/storage/v1/object/{bucket_name}/{file_name}",
+                    headers={
+                        "Authorization": f"Bearer {supabase_key}",
+                        "Content-Type": "image/png",
+                        "x-upsert": "true",
+                    },
+                    content=image_data
+                )
+            
+            if upload_response.status_code not in [200, 201]:
+                raise Exception(f"Storage upload failed: {upload_response.text}")
+            
+            # Get public URL
+            hanko_url = f"{supabase_url}/storage/v1/object/public/{bucket_name}/{file_name}"
+            
+            # Update user profile with hanko_url
+            update_response = await client.patch(
+                f"{supabase_url}/rest/v1/profiles?id=eq.{request.user_id}",
+                headers={
+                    "Authorization": f"Bearer {supabase_key}",
+                    "apikey": supabase_key,
+                    "Content-Type": "application/json",
+                    "Prefer": "return=minimal",
+                },
+                json={"hanko_url": hanko_url}
+            )
+            
+            if update_response.status_code not in [200, 204]:
+                print(f"Warning: Could not update profile: {update_response.text}")
+        
+        return HankoResponse(
+            success=True,
+            hanko_url=hanko_url,
+            message="印鑑を保存しました"
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"印鑑の生成に失敗しました: {str(e)}")
 
 
 # ===================
