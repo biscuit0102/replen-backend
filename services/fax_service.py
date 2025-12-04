@@ -48,6 +48,7 @@ class OrderItem(BaseModel):
     price: int
     quantity: int = 1
     barcode: Optional[str] = None
+    unit: Optional[str] = "個"  # 箱, 本, 個, パック, kg, 袋
 
 
 class OrderSendResponse(BaseModel):
@@ -194,11 +195,14 @@ def generate_pdf(
     
     for i, item in enumerate(items, 1):
         subtotal = item.price * item.quantity
+        # Display quantity with unit (e.g., "3 箱", "5 本")
+        unit = item.unit or "個"
+        quantity_display = f"{item.quantity} {unit}"
         table_data.append([
             str(i),
             item.name,
             f"¥{item.price:,}",
-            str(item.quantity),
+            quantity_display,
             f"¥{subtotal:,}"
         ])
     

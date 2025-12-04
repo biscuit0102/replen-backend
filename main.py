@@ -46,6 +46,7 @@ class OrderItem(BaseModel):
     price: int
     quantity: int = 1
     barcode: Optional[str] = None
+    unit: Optional[str] = "個"  # 箱, 本, 個, パック, kg, 袋
 
 class OrderRequest(BaseModel):
     """Request to send an order via fax (legacy endpoint)"""
@@ -95,9 +96,12 @@ class ProductLookupResponse(BaseModel):
     found: bool
     barcode: str
     name: Optional[str] = None
-    price: Optional[int] = None
+    price: Optional[int] = None  # Pack/case price from Yahoo
     image_url: Optional[str] = None
     category: Optional[str] = None
+    suggested_unit: Optional[str] = None  # 箱, 本, 個, パック, kg, 袋
+    pack_quantity: Optional[int] = None  # Number of items in pack (e.g., 48)
+    unit_price: Optional[int] = None  # Calculated: price / pack_quantity
 
 class OrderSendResponse(BaseModel):
     """Response from sending an order"""
@@ -273,7 +277,8 @@ async def api_send_order_multi(request: MultiChannelOrderRequest):
                 "name": item.name,
                 "price": item.price,
                 "quantity": item.quantity,
-                "barcode": item.barcode
+                "barcode": item.barcode,
+                "unit": item.unit
             }
             for item in request.items
         ]
