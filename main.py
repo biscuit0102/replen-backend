@@ -20,6 +20,9 @@ from services.email_service import send_order_email, OrderItem as EmailOrderItem
 from services.hanko_service import create_hanko_image
 # LINE is handled by Flutter app via Deep Link - no backend needed
 
+# Import routers
+from routers.analytics import router as analytics_router
+
 # Initialize FastAPI app
 app = FastAPI(
     title="ReplenMobile API",
@@ -35,6 +38,9 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Include routers
+app.include_router(analytics_router)
 
 # ===================
 # Pydantic Models
