@@ -64,8 +64,6 @@ class DailyTrendResponse(BaseModel):
     month: int
     total_spend: int
     has_data: bool
-    months: List[MonthlySpending]
-    has_data: bool
 
 # ===================
 # Helper Functions
