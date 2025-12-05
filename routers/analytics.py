@@ -40,6 +40,18 @@ class FrequentProduct(BaseModel):
     total_quantity: int
     order_count: int
 
+class MonthlySpending(BaseModel):
+    """Spending data for a single month"""
+    month: str  # "2025-12" format
+    month_label: str  # "12月" format
+    total_spend: int
+    order_count: int
+
+class MonthlyTrendResponse(BaseModel):
+    """Response for monthly trend endpoint"""
+    months: List[MonthlySpending]
+    has_data: bool
+
 # ===================
 # Helper Functions
 # ===================
@@ -376,4 +388,110 @@ async def get_frequent_products(
         raise HTTPException(
             status_code=500,
             detail=f"Failed to get frequent products: {str(e)}"
+        )
+
+@router.get("/monthly-trend", response_model=MonthlyTrendResponse)
+async def get_monthly_trend(
+    months: int = 6,
+    authorization: Optional[str] = Header(None)
+):
+    """
+    Get monthly spending trend for the past N months.
+    Only returns months that have actual data.
+    
+    Parameters:
+    - months: Maximum number of months to look back (default 6)
+    
+    Returns list of monthly spending data (only months with orders).
+    """
+    try:
+        supabase_url, supabase_key = get_supabase_client()
+        auth_key = supabase_key
+        
+        async with httpx.AsyncClient() as client:
+            # Fetch all orders
+            response = await client.get(
+                f"{supabase_url}/rest/v1/orders",
+                params={
+                    "select": "id,total_amount,created_at",
+                    "order": "created_at.asc",
+                },
+                headers={
+                    "Authorization": f"Bearer {auth_key}",
+                    "apikey": supabase_key,
+                    "Content-Type": "application/json",
+                },
+            )
+            
+            if response.status_code != 200:
+                raise HTTPException(
+                    status_code=response.status_code,
+                    detail=f"Failed to fetch orders: {response.text}"
+                )
+            
+            orders = response.json()
+            
+            if not orders:
+                return MonthlyTrendResponse(months=[], has_data=False)
+            
+            # Aggregate by month
+            monthly_stats = {}
+            for order in orders:
+                if not order.get('created_at'):
+                    continue
+                    
+                try:
+                    order_date_str = order['created_at']
+                    if 'Z' in order_date_str:
+                        order_date = datetime.fromisoformat(order_date_str.replace('Z', '+00:00'))
+                    elif '+' in order_date_str:
+                        order_date = datetime.fromisoformat(order_date_str)
+                    else:
+                        order_date = datetime.fromisoformat(order_date_str)
+                    
+                    # Create month key
+                    month_key = order_date.strftime("%Y-%m")
+                    month_label = f"{order_date.month}月"
+                    
+                    if month_key not in monthly_stats:
+                        monthly_stats[month_key] = {
+                            'month': month_key,
+                            'month_label': month_label,
+                            'total_spend': 0,
+                            'order_count': 0,
+                        }
+                    
+                    monthly_stats[month_key]['total_spend'] += order.get('total_amount', 0) or 0
+                    monthly_stats[month_key]['order_count'] += 1
+                except:
+                    continue
+            
+            # Sort by month and take the last N months with data
+            sorted_months = sorted(monthly_stats.values(), key=lambda x: x['month'])
+            
+            # Only keep the last N months
+            if len(sorted_months) > months:
+                sorted_months = sorted_months[-months:]
+            
+            monthly_spending = [
+                MonthlySpending(
+                    month=m['month'],
+                    month_label=m['month_label'],
+                    total_spend=m['total_spend'],
+                    order_count=m['order_count'],
+                )
+                for m in sorted_months
+            ]
+            
+            return MonthlyTrendResponse(
+                months=monthly_spending,
+                has_data=len(monthly_spending) > 0,
+            )
+            
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to get monthly trend: {str(e)}"
         )
