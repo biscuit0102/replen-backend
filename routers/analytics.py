@@ -52,6 +52,21 @@ class MonthlyTrendResponse(BaseModel):
     months: List[MonthlySpending]
     has_data: bool
 
+class DailySpend(BaseModel):
+    """Spending data for a single day"""
+    day: int  # 1-31
+    amount: int
+
+class DailyTrendResponse(BaseModel):
+    """Response for daily trend endpoint - always returns full month (28-31 days)"""
+    days: List[DailySpend]
+    year: int
+    month: int
+    total_spend: int
+    has_data: bool
+    months: List[MonthlySpending]
+    has_data: bool
+
 # ===================
 # Helper Functions
 # ===================
@@ -494,4 +509,105 @@ async def get_monthly_trend(
         raise HTTPException(
             status_code=500,
             detail=f"Failed to get monthly trend: {str(e)}"
+        )
+
+@router.get("/daily-trend", response_model=DailyTrendResponse)
+async def get_daily_trend(
+    year: Optional[int] = None,
+    month: Optional[int] = None,
+    authorization: Optional[str] = Header(None)
+):
+    """
+    Get daily spending trend for a specific month.
+    Returns ALL days of the month (1-31), filling missing days with 0.
+    
+    Parameters:
+    - year: Year (default: current year)
+    - month: Month 1-12 (default: current month)
+    
+    Returns list of daily spending with complete days for the month.
+    """
+    try:
+        import calendar
+        
+        # Default to current month
+        now = datetime.now()
+        target_year = year or now.year
+        target_month = month or now.month
+        
+        # Get number of days in the month
+        days_in_month = calendar.monthrange(target_year, target_month)[1]
+        
+        # Initialize all days with 0
+        daily_amounts = {day: 0 for day in range(1, days_in_month + 1)}
+        
+        supabase_url, supabase_key = get_supabase_client()
+        auth_key = supabase_key
+        
+        async with httpx.AsyncClient() as client:
+            # Fetch all orders
+            response = await client.get(
+                f"{supabase_url}/rest/v1/orders",
+                params={
+                    "select": "id,total_amount,created_at",
+                },
+                headers={
+                    "Authorization": f"Bearer {auth_key}",
+                    "apikey": supabase_key,
+                    "Content-Type": "application/json",
+                },
+            )
+            
+            if response.status_code != 200:
+                raise HTTPException(
+                    status_code=response.status_code,
+                    detail=f"Failed to fetch orders: {response.text}"
+                )
+            
+            orders = response.json()
+            
+            # Filter and aggregate by day
+            for order in orders:
+                if not order.get('created_at'):
+                    continue
+                    
+                try:
+                    order_date_str = order['created_at']
+                    if 'Z' in order_date_str:
+                        order_date = datetime.fromisoformat(order_date_str.replace('Z', '+00:00'))
+                    elif '+' in order_date_str:
+                        order_date = datetime.fromisoformat(order_date_str)
+                    else:
+                        order_date = datetime.fromisoformat(order_date_str)
+                    
+                    # Check if order is in target month
+                    if order_date.year == target_year and order_date.month == target_month:
+                        day = order_date.day
+                        amount = order.get('total_amount', 0) or 0
+                        daily_amounts[day] += amount
+                except:
+                    continue
+            
+            # Build response with all days
+            days = [
+                DailySpend(day=day, amount=amount)
+                for day, amount in sorted(daily_amounts.items())
+            ]
+            
+            total_spend = sum(d.amount for d in days)
+            
+            return DailyTrendResponse(
+                days=days,
+                year=target_year,
+                month=target_month,
+                total_spend=total_spend,
+                has_data=total_spend > 0,
+            )
+            
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to get daily trend: {str(e)}"
         )
