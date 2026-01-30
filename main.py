@@ -1,16 +1,27 @@
 # ReplenMobile Backend
 # FastAPI server for AI invoice parsing, barcode lookup, and multi-channel order sending
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import List, Optional, Literal
 import os
+import logging
 from dotenv import load_dotenv
+from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi.util import get_remote_address
+from slowapi.errors import RateLimitExceeded
 
 # Load environment variables
 load_dotenv()
+
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
 
 # Import services
 from services.ai_service import parse_invoice
@@ -23,6 +34,9 @@ from services.hanko_service import create_hanko_image
 # Import routers
 from routers.analytics import router as analytics_router
 
+# Initialize rate limiter
+limiter = Limiter(key_func=get_remote_address)
+
 # Initialize FastAPI app
 app = FastAPI(
     title="ReplenMobile API",
@@ -30,10 +44,18 @@ app = FastAPI(
     version="2.0.0"
 )
 
+# Add rate limiter to app state
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+
 # Configure CORS for Flutter app
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # In production, specify your app's domain
+    allow_origins=[
+        "https://replen-backend-production.up.railway.app",  # Production backend
+        "http://localhost:*",  # Local development
+        "https://xvmfekxkxforianncgob.supabase.co",  # Supabase
+    ] if os.getenv("ENVIRONMENT") == "production" else ["*"],  # Allow all in dev
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -41,6 +63,52 @@ app.add_middleware(
 
 # Include routers
 app.include_router(analytics_router)
+
+# ===================
+# Startup Validation
+# ===================
+
+@app.on_event("startup")
+async def validate_environment():
+    """Validate required environment variables on startup"""
+    required_vars = {
+        "OPENAI_API_KEY": "AI invoice parsing will not work",
+        "SUPABASE_URL": "Analytics endpoints will not work",
+    }
+    
+    recommended_vars = {
+        "YAHOO_API_KEY": "Barcode lookup will return mock data",
+        "CLICKSEND_USERNAME": "FAX sending will not work",
+        "CLICKSEND_API_KEY": "FAX sending will not work",
+    }
+    
+    missing_required = []
+    missing_recommended = []
+    
+    # Check required variables
+    for var, description in required_vars.items():
+        if not os.getenv(var):
+            missing_required.append(f"  - {var}: {description}")
+            logger.error(f"REQUIRED: Missing environment variable {var}")
+    
+    # Check recommended variables
+    for var, description in recommended_vars.items():
+        if not os.getenv(var):
+            missing_recommended.append(f"  - {var}: {description}")
+            logger.warning(f"OPTIONAL: Missing environment variable {var}")
+    
+    # Fail if required variables are missing
+    if missing_required:
+        error_msg = "Missing required environment variables:\n" + "\n".join(missing_required)
+        logger.error(error_msg)
+        raise RuntimeError(error_msg)
+    
+    # Warn about recommended variables
+    if missing_recommended:
+        warning_msg = "Missing recommended environment variables:\n" + "\n".join(missing_recommended)
+        logger.warning(warning_msg)
+    
+    logger.info("✅ Environment validation passed")
 
 # ===================
 # Pydantic Models
@@ -160,60 +228,78 @@ async def health_check():
 # ===================
 
 @app.post("/api/parse-invoice", response_model=InvoiceParseResponse)
-async def api_parse_invoice(request: InvoiceParseRequest):
+@limiter.limit("10/minute")  # Limit to 10 invoice parses per minute
+async def api_parse_invoice(request: Request, parse_request: InvoiceParseRequest):
     """
     Parse an invoice image using AI (GPT-4o Vision)
+    
+    Rate limit: 10 requests per minute per IP
     
     Extracts product names, prices, and product codes from Japanese invoice images.
     """
     try:
-        items = await parse_invoice(request.base64_image)
+        logger.info(f"Parsing invoice from {get_remote_address(request)}")
+        items = await parse_invoice(parse_request.base64_image)
+        logger.info(f"Successfully parsed {len(items)} items")
         return InvoiceParseResponse(items=items)
     except Exception as e:
+        logger.error(f"Failed to parse invoice: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Failed to parse invoice: {str(e)}")
 
 
 @app.get("/api/lookup/{barcode}", response_model=ProductLookupResponse)
-async def api_lookup_barcode(barcode: str):
+@limiter.limit("30/minute")  # Limit to 30 barcode lookups per minute
+async def api_lookup_barcode(request: Request, barcode: str):
     """
     Lookup product information by barcode (JAN code)
+    
+    Rate limit: 30 requests per minute per IP
     
     Uses Yahoo Japan Shopping API to find product details.
     """
     try:
+        logger.info(f"Looking up barcode {barcode} from {get_remote_address(request)}")
         result = await lookup_barcode(barcode)
+        logger.info(f"Barcode lookup {'found' if result.found else 'not found'}: {barcode}")
         return result
     except Exception as e:
+        logger.error(f"Failed to lookup product {barcode}: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Failed to lookup product: {str(e)}")
 
 
 @app.post("/api/send-order", response_model=OrderSendResponse)
-async def api_send_order(request: OrderRequest):
+@limiter.limit("20/hour")  # Limit to 20 orders per hour
+async def api_send_order(request: Request, order_request: OrderRequest):
     """
     Send an order via fax (legacy endpoint - use /api/send-order-multi for new integrations)
+    
+    Rate limit: 20 requests per hour per IP
     
     Generates a PDF invoice and sends it via ClickSend fax API.
     """
     try:
+        logger.info(f"Sending order via FAX from {get_remote_address(request)}")
         # Generate PDF
         pdf_path = generate_pdf(
-            items=request.items,
-            supplier_name=request.supplier_name,
-            hanko_url=request.hanko_url,
-            note=request.note,
-            sender_name=request.sender_name,
-            sender_phone=request.sender_phone,
+            items=order_request.items,
+            supplier_name=order_request.supplier_name,
+            hanko_url=order_request.hanko_url,
+            note=order_request.note,
+            sender_name=order_request.sender_name,
+            sender_phone=order_request.sender_phone,
         )
         
         # Send fax
         result = send_fax(
             pdf_path=pdf_path,
-            fax_number=request.supplier_fax
+            fax_number=order_request.supplier_fax
         )
         
         # Clean up PDF file
         if os.path.exists(pdf_path):
             os.remove(pdf_path)
+        
+        logger.info(f"Order sent via FAX: {result.success}")
         
         # Return response with method_used
         return OrderSendResponse(
@@ -223,6 +309,7 @@ async def api_send_order(request: OrderRequest):
             method_used="fax"
         )
     except Exception as e:
+        logger.error(f"Failed to send order via FAX: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Failed to send order: {str(e)}")
 
 
@@ -267,9 +354,12 @@ async def api_preview_pdf(request: PreviewPdfRequest):
 
 
 @app.post("/api/send-order-multi", response_model=OrderSendResponse)
-async def api_send_order_multi(request: MultiChannelOrderRequest):
+@limiter.limit("20/hour")  # Limit to 20 orders per hour
+async def api_send_order_multi(request: Request, order_request: MultiChannelOrderRequest):
     """
     Send an order via multiple channels (FAX, Email, or LINE)
+    
+    Rate limit: 20 requests per hour per IP
     
     Routes the order to the appropriate service based on contact_method.
     - FAX: Generates PDF and sends via ClickSend
