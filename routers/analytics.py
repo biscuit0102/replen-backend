@@ -105,20 +105,43 @@ def format_period_japanese():
 # ===================
 
 @router.get("/summary", response_model=AnalyticsSummary)
-async def get_monthly_summary(authorization: Optional[str] = Header(None)):
+async def get_monthly_summary(
+    year: Optional[int] = None,
+    month: Optional[int] = None,
+    authorization: Optional[str] = Header(None)
+):
     """
-    Get analytics summary for the current month.
+    Get analytics summary for a specific month or current month.
+    
+    Parameters:
+    - year: Year (default: current year)
+    - month: Month 1-12 (default: current month)
     
     Returns:
-    - total_spend: Sum of all order amounts this month
-    - order_count: Number of orders sent this month
+    - total_spend: Sum of all order amounts for the month
+    - order_count: Number of orders sent in the month
     - supplier_count: Number of unique suppliers ordered from
     - avg_order_value: Average order value
-    - period: Current month in Japanese format
+    - period: Month in Japanese format
     """
     try:
         supabase_url, supabase_key = get_supabase_client()
-        month_start, month_end = get_month_start_end()
+        
+        # Default to current month if not specified
+        now = datetime.now()
+        target_year = year or now.year
+        target_month = month or now.month
+        
+        # Get start and end of target month
+        month_start_dt = datetime(target_year, target_month, 1, 0, 0, 0)
+        
+        if target_month == 12:
+            month_end_dt = datetime(target_year + 1, 1, 1, 0, 0, 0)
+        else:
+            month_end_dt = datetime(target_year, target_month + 1, 1, 0, 0, 0)
+        
+        month_start = month_start_dt.isoformat()
+        month_end = month_end_dt.isoformat()
         
         # Use service key for backend, or user's token if provided
         auth_key = supabase_key
@@ -200,7 +223,7 @@ async def get_monthly_summary(authorization: Optional[str] = Header(None)):
                 order_count=order_count,
                 supplier_count=supplier_count,
                 avg_order_value=avg_order_value,
-                period=format_period_japanese(),
+                period=f"{target_year}年{target_month}月",
             )
             
     except HTTPException:
@@ -215,6 +238,8 @@ async def get_monthly_summary(authorization: Optional[str] = Header(None)):
 async def get_top_suppliers(
     limit: int = 5,
     all_time: bool = False,
+    year: Optional[int] = None,
+    month: Optional[int] = None,
     authorization: Optional[str] = Header(None)
 ):
     """
@@ -222,13 +247,20 @@ async def get_top_suppliers(
     
     Parameters:
     - limit: Number of suppliers to return (default 5)
-    - all_time: If true, considers all orders; otherwise current month only
+    - all_time: If true, considers all orders; otherwise specific month
+    - year: Year (default: current year) - ignored if all_time=true
+    - month: Month 1-12 (default: current month) - ignored if all_time=true
     
     Returns list of suppliers with their total spend and order count.
     """
     try:
         supabase_url, supabase_key = get_supabase_client()
         auth_key = supabase_key
+        
+        # Default to current month if not specified and not all_time
+        now = datetime.now()
+        target_year = year or now.year
+        target_month = month or now.month
         
         async with httpx.AsyncClient() as client:
             # Fetch all orders with supplier info
@@ -252,11 +284,14 @@ async def get_top_suppliers(
             
             orders = response.json()
             
-            # Filter by current month if not all_time
+            # Filter by target month if not all_time
             if not all_time:
-                month_start, month_end = get_month_start_end()
-                month_start_dt = datetime.fromisoformat(month_start)
-                month_end_dt = datetime.fromisoformat(month_end)
+                month_start_dt = datetime(target_year, target_month, 1, 0, 0, 0)
+                
+                if target_month == 12:
+                    month_end_dt = datetime(target_year + 1, 1, 1, 0, 0, 0)
+                else:
+                    month_end_dt = datetime(target_year, target_month + 1, 1, 0, 0, 0)
                 
                 filtered_orders = []
                 for order in orders:
@@ -320,7 +355,7 @@ async def get_top_suppliers(
             
             return TopSuppliersResponse(
                 suppliers=top_suppliers,
-                period=format_period_japanese() if not all_time else "全期間",
+                period=f"{target_year}年{target_month}月" if not all_time else "全期間",
             )
             
     except HTTPException:
