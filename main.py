@@ -406,9 +406,9 @@ async def api_send_order_multi(request: Request, order_request: MultiChannelOrde
                 os.remove(pdf_path)
             
             return OrderSendResponse(
-                success=result.get("success", False),
-                message=result.get("message", "FAXで注文を送信しました"),
-                confirmation_id=result.get("confirmation_id"),
+                success=result.success,
+                message=result.message,
+                confirmation_id=result.confirmation_id,
                 method_used="fax"
             )
             
@@ -456,9 +456,9 @@ async def api_send_order_multi(request: Request, order_request: MultiChannelOrde
                 os.remove(pdf_path)
             
             return OrderSendResponse(
-                success=result.get("success", False),
-                message=result.get("message", "メールで注文を送信しました"),
-                confirmation_id=result.get("confirmation_id"),
+                success=result.success,
+                message=result.message,
+                confirmation_id=result.confirmation_id,
                 method_used="email"
             )
             
