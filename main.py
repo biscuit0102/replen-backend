@@ -159,6 +159,7 @@ class ParsedItem(BaseModel):
     name: str
     price: int
     product_code: Optional[str] = None
+    category: str = "その他"
 
 class InvoiceParseResponse(BaseModel):
     """Response from invoice parsing"""
@@ -241,7 +242,7 @@ async def api_parse_invoice(request: Request, parse_request: InvoiceParseRequest
         logger.info(f"Parsing invoice from {get_remote_address(request)}")
         items = await parse_invoice(parse_request.base64_image)
         logger.info(f"Successfully parsed {len(items)} items")
-        return InvoiceParseResponse(items=items)
+        return InvoiceParseResponse(items=[item.model_dump() for item in items])
     except Exception as e:
         logger.error(f"Failed to parse invoice: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Failed to parse invoice: {str(e)}")
