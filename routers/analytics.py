@@ -168,23 +168,23 @@ async def get_monthly_summary(
         # Use service key for backend, or user's token if provided
         
         async with httpx.AsyncClient() as client:
-            # Fetch orders for current month
+            # Fetch orders scoped to this user (explicit filter + RLS double protection)
             response = await client.get(
                 f"{supabase_url}/rest/v1/orders",
                 params={
                     "select": "id,total_amount,supplier_id,created_at",
-                    "created_at": f"gte.{month_start}",
-                    "created_at": f"lt.{month_end}",
+                    "user_id": f"eq.{user_id}",
                 },
                 headers=_supabase_headers(supabase_key, user_jwt),
             )
             
             if response.status_code != 200:
-                # If filtering fails, try without date filter and filter in Python
+                # If filtering fails, try fallback (still scoped to user)
                 response = await client.get(
                     f"{supabase_url}/rest/v1/orders",
                     params={
                         "select": "id,total_amount,supplier_id,created_at",
+                        "user_id": f"eq.{user_id}",
                     },
                     headers=_supabase_headers(supabase_key, user_jwt),
                 )
@@ -279,11 +279,12 @@ async def get_top_suppliers(
         target_month = month or now.month
         
         async with httpx.AsyncClient() as client:
-            # Fetch all orders with supplier info
+            # Fetch orders scoped to this user (explicit filter + RLS double protection)
             response = await client.get(
                 f"{supabase_url}/rest/v1/orders",
                 params={
                     "select": "id,total_amount,supplier_id,supplier_name,created_at",
+                    "user_id": f"eq.{user_id}",
                 },
                 headers=_supabase_headers(supabase_key, user_jwt),
             )
@@ -396,11 +397,12 @@ async def get_frequent_products(
         user_jwt = authorization.split()[1] if authorization else supabase_key
         
         async with httpx.AsyncClient() as client:
-            # Fetch all order items
+            # Fetch order items scoped to this user's orders via join
             response = await client.get(
                 f"{supabase_url}/rest/v1/order_items",
                 params={
-                    "select": "product_name,quantity",
+                    "select": "product_name,quantity,orders!inner(user_id)",
+                    "orders.user_id": f"eq.{user_id}",
                 },
                 headers=_supabase_headers(supabase_key, user_jwt),
             )
@@ -471,11 +473,12 @@ async def get_monthly_trend(
         user_jwt = authorization.split()[1] if authorization else supabase_key
         
         async with httpx.AsyncClient() as client:
-            # Fetch all orders
+            # Fetch orders scoped to this user (explicit filter + RLS double protection)
             response = await client.get(
                 f"{supabase_url}/rest/v1/orders",
                 params={
                     "select": "id,total_amount,created_at",
+                    "user_id": f"eq.{user_id}",
                     "order": "created_at.asc",
                 },
                 headers=_supabase_headers(supabase_key, user_jwt),
@@ -591,11 +594,12 @@ async def get_daily_trend(
         user_jwt = authorization.split()[1] if authorization else supabase_key
         
         async with httpx.AsyncClient() as client:
-            # Fetch all orders
+            # Fetch orders scoped to this user (explicit filter + RLS double protection)
             response = await client.get(
                 f"{supabase_url}/rest/v1/orders",
                 params={
                     "select": "id,total_amount,created_at",
+                    "user_id": f"eq.{user_id}",
                 },
                 headers=_supabase_headers(supabase_key, user_jwt),
             )
