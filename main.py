@@ -66,7 +66,7 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=_allowed_origins,
     allow_credentials=True,
-    allow_methods=["GET", "POST", "OPTIONS"],
+    allow_methods=["GET", "POST", "DELETE", "OPTIONS"],
     allow_headers=["Authorization", "Content-Type", "apikey"],
 )
 
@@ -84,6 +84,7 @@ async def validate_environment():
         "OPENAI_API_KEY": "AI invoice parsing will not work",
         "SUPABASE_URL": "Analytics endpoints will not work",
         "SUPABASE_JWT_SECRET": "JWT authentication will not work",
+        "SUPABASE_ANON_KEY": "Analytics and hanko endpoints will not work",
     }
     
     recommended_vars = {
@@ -602,6 +603,78 @@ async def api_generate_hanko(request: HankoRequest, user_id: str = Depends(verif
     except Exception as e:
         logger.error(f"Failed to generate hanko for user={user_id}: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail="印鑑の生成に失敗しました")
+
+
+# ===================
+# Delete Account
+# ===================
+
+@app.delete("/api/delete-account")
+@limiter.limit("3/hour")
+async def delete_account(request: Request, user_id: str = Depends(verify_jwt)):
+    """Permanently delete a user account and all their data."""
+    supabase_url = os.getenv("SUPABASE_URL")
+    service_key = os.getenv("SUPABASE_SERVICE_KEY")
+
+    if not supabase_url or not service_key:
+        raise HTTPException(status_code=500, detail="サーバー設定エラー")
+
+    admin_headers = {
+        "apikey": service_key,
+        "Authorization": f"Bearer {service_key}",
+        "Content-Type": "application/json",
+    }
+
+    import httpx
+    async with httpx.AsyncClient() as client:
+        # Delete all user data from each table
+        tables = ["order_items", "orders", "products", "categories", "suppliers", "profiles"]
+        for table in tables:
+            try:
+                if table == "order_items":
+                    # order_items don't have user_id directly – delete via orders join
+                    # First get order ids for this user
+                    orders_resp = await client.get(
+                        f"{supabase_url}/rest/v1/orders",
+                        headers={**admin_headers, "Accept": "application/json"},
+                        params={"user_id": f"eq.{user_id}", "select": "id"},
+                    )
+                    if orders_resp.status_code == 200:
+                        order_ids = [o["id"] for o in orders_resp.json()]
+                        if order_ids:
+                            ids_str = "(" + ",".join(f'"{oid}"' for oid in order_ids) + ")"
+                            await client.delete(
+                                f"{supabase_url}/rest/v1/order_items",
+                                headers=admin_headers,
+                                params={"order_id": f"in.{ids_str}"},
+                            )
+                elif table == "profiles":
+                    await client.delete(
+                        f"{supabase_url}/rest/v1/profiles",
+                        headers=admin_headers,
+                        params={"id": f"eq.{user_id}"},
+                    )
+                else:
+                    await client.delete(
+                        f"{supabase_url}/rest/v1/{table}",
+                        headers=admin_headers,
+                        params={"user_id": f"eq.{user_id}"},
+                    )
+            except Exception as e:
+                logger.warning(f"Could not delete from {table} for user {user_id}: {e}")
+
+        # Delete the auth user
+        auth_resp = await client.delete(
+            f"{supabase_url}/auth/v1/admin/users/{user_id}",
+            headers=admin_headers,
+        )
+
+    if auth_resp.status_code not in (200, 204):
+        logger.error(f"Failed to delete auth user {user_id}: {auth_resp.status_code} {auth_resp.text}")
+        raise HTTPException(status_code=500, detail="アカウント削除に失敗しました")
+
+    logger.info(f"Account deleted: user_id={user_id}")
+    return {"success": True, "message": "アカウントを削除しました"}
 
 
 # ===================
