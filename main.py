@@ -221,17 +221,10 @@ async def root():
 
 @app.get("/health")
 async def health_check():
-    """Detailed health check"""
+    """Health check endpoint"""
     return {
         "status": "healthy",
-        "services": {
-            "openai": bool(os.getenv("OPENAI_API_KEY")),
-            "yahoo": bool(os.getenv("YAHOO_API_KEY")),
-            "clicksend": bool(os.getenv("CLICKSEND_USERNAME")),
-            "email_smtp": bool(os.getenv("SMTP_HOST")),
-            "email_resend": bool(os.getenv("RESEND_API_KEY")),
-        },
-        "note": "LINE sending is handled by Flutter app via Deep Link"
+        "version": "2.0.0"
     }
 
 # ===================
@@ -335,7 +328,8 @@ class PreviewPdfRequest(BaseModel):
 
 
 @app.post("/api/preview-pdf")
-async def api_preview_pdf(request: PreviewPdfRequest):
+@limiter.limit("20/hour")
+async def api_preview_pdf(request: Request, pdf_request: PreviewPdfRequest, user_id: str = Depends(verify_jwt)):
     """
     Generate a PDF preview of the order (with hanko) without sending.
     
@@ -345,23 +339,24 @@ async def api_preview_pdf(request: PreviewPdfRequest):
     try:
         # Generate PDF with hanko
         pdf_path = generate_pdf(
-            items=request.items,
-            supplier_name=request.supplier_name,
-            hanko_url=request.hanko_url,
-            note=request.note,
-            sender_name=request.sender_name,
-            sender_phone=request.sender_phone,
+            items=pdf_request.items,
+            supplier_name=pdf_request.supplier_name,
+            hanko_url=pdf_request.hanko_url,
+            note=pdf_request.note,
+            sender_name=pdf_request.sender_name,
+            sender_phone=pdf_request.sender_phone,
         )
         
         # Return PDF file
         return FileResponse(
             path=pdf_path,
             media_type="application/pdf",
-            filename=f"order_{request.supplier_name or 'preview'}.pdf",
+            filename=f"order_{pdf_request.supplier_name or 'preview'}.pdf",
             background=None  # Don't delete file in background
         )
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to generate PDF: {str(e)}")
+        logger.error(f"Failed to generate PDF for user={user_id}: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail="PDFの生成に失敗しました")
 
 
 @app.post("/api/send-order-multi", response_model=OrderSendResponse)
@@ -525,7 +520,7 @@ async def api_generate_hanko(request: HankoRequest, user_id: str = Depends(verif
         
         # Get Supabase credentials
         supabase_url = os.getenv("SUPABASE_URL")
-        supabase_key = os.getenv("SUPABASE_SERVICE_KEY") or os.getenv("SUPABASE_ANON_KEY")
+        supabase_key = os.getenv("SUPABASE_ANON_KEY")
         
         if not supabase_url or not supabase_key:
             # Dev mode - return base64 image URL
