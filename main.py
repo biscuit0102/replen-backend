@@ -1,7 +1,7 @@
 # ReplenMobile Backend
 # FastAPI server for AI invoice parsing, barcode lookup, and multi-channel order sending
 
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, HTTPException, Request, Depends
 from fastapi.responses import FileResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
@@ -12,6 +12,7 @@ from dotenv import load_dotenv
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.util import get_remote_address
 from slowapi.errors import RateLimitExceeded
+from auth import verify_jwt
 
 # Load environment variables
 load_dotenv()
@@ -48,17 +49,25 @@ app = FastAPI(
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
-# Configure CORS for Flutter app
+# Configure CORS - strict by default, explicit dev mode only
+_allowed_origins = [
+    "https://replen-backend-production.up.railway.app",
+    "https://xvmfekxkxforianncgob.supabase.co",
+]
+if os.getenv("ENVIRONMENT") == "development":
+    _allowed_origins.extend([
+        "http://localhost:8000",
+        "http://localhost:3000",
+        "http://127.0.0.1:8000",
+        "http://127.0.0.1:3000",
+    ])
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "https://replen-backend-production.up.railway.app",  # Production backend
-        "http://localhost:*",  # Local development
-        "https://xvmfekxkxforianncgob.supabase.co",  # Supabase
-    ] if os.getenv("ENVIRONMENT") == "production" else ["*"],  # Allow all in dev
+    allow_origins=_allowed_origins,
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["GET", "POST", "OPTIONS"],
+    allow_headers=["Authorization", "Content-Type", "apikey"],
 )
 
 # Include routers
@@ -74,6 +83,7 @@ async def validate_environment():
     required_vars = {
         "OPENAI_API_KEY": "AI invoice parsing will not work",
         "SUPABASE_URL": "Analytics endpoints will not work",
+        "SUPABASE_JWT_SECRET": "JWT authentication will not work",
     }
     
     recommended_vars = {
@@ -188,7 +198,7 @@ class OrderSendResponse(BaseModel):
 class HankoRequest(BaseModel):
     """Request to generate a company seal (hanko)"""
     text: str  # 1-4 Japanese characters
-    user_id: str  # Supabase user ID
+    # user_id is now extracted from JWT token - no longer accepted from body
 
 class HankoResponse(BaseModel):
     """Response from hanko generation"""
@@ -230,7 +240,7 @@ async def health_check():
 
 @app.post("/api/parse-invoice", response_model=InvoiceParseResponse)
 @limiter.limit("10/minute")  # Limit to 10 invoice parses per minute
-async def api_parse_invoice(request: Request, parse_request: InvoiceParseRequest):
+async def api_parse_invoice(request: Request, parse_request: InvoiceParseRequest, user_id: str = Depends(verify_jwt)):
     """
     Parse an invoice image using AI (GPT-4o Vision)
     
@@ -239,18 +249,18 @@ async def api_parse_invoice(request: Request, parse_request: InvoiceParseRequest
     Extracts product names, prices, and product codes from Japanese invoice images.
     """
     try:
-        logger.info(f"Parsing invoice from {get_remote_address(request)}")
+        logger.info(f"Parsing invoice from user={user_id} ip={get_remote_address(request)}")
         items = await parse_invoice(parse_request.base64_image)
-        logger.info(f"Successfully parsed {len(items)} items")
+        logger.info(f"Successfully parsed {len(items)} items for user={user_id}")
         return InvoiceParseResponse(items=[item.model_dump() for item in items])
     except Exception as e:
-        logger.error(f"Failed to parse invoice: {str(e)}", exc_info=True)
-        raise HTTPException(status_code=500, detail=f"Failed to parse invoice: {str(e)}")
+        logger.error(f"Failed to parse invoice for user={user_id}: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail="請求書の解析に失敗しました")
 
 
 @app.get("/api/lookup/{barcode}", response_model=ProductLookupResponse)
 @limiter.limit("30/minute")  # Limit to 30 barcode lookups per minute
-async def api_lookup_barcode(request: Request, barcode: str):
+async def api_lookup_barcode(request: Request, barcode: str, user_id: str = Depends(verify_jwt)):
     """
     Lookup product information by barcode (JAN code)
     
@@ -259,18 +269,18 @@ async def api_lookup_barcode(request: Request, barcode: str):
     Uses Yahoo Japan Shopping API to find product details.
     """
     try:
-        logger.info(f"Looking up barcode {barcode} from {get_remote_address(request)}")
+        logger.info(f"Looking up barcode {barcode} from user={user_id} ip={get_remote_address(request)}")
         result = await lookup_barcode(barcode)
-        logger.info(f"Barcode lookup {'found' if result.found else 'not found'}: {barcode}")
+        logger.info(f"Barcode lookup {'found' if result.found else 'not found'}: {barcode} user={user_id}")
         return result
     except Exception as e:
-        logger.error(f"Failed to lookup product {barcode}: {str(e)}", exc_info=True)
-        raise HTTPException(status_code=500, detail=f"Failed to lookup product: {str(e)}")
+        logger.error(f"Failed to lookup product {barcode} for user={user_id}: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail="商品の検索に失敗しました")
 
 
 @app.post("/api/send-order", response_model=OrderSendResponse)
 @limiter.limit("20/hour")  # Limit to 20 orders per hour
-async def api_send_order(request: Request, order_request: OrderRequest):
+async def api_send_order(request: Request, order_request: OrderRequest, user_id: str = Depends(verify_jwt)):
     """
     Send an order via fax (legacy endpoint - use /api/send-order-multi for new integrations)
     
@@ -279,7 +289,7 @@ async def api_send_order(request: Request, order_request: OrderRequest):
     Generates a PDF invoice and sends it via ClickSend fax API.
     """
     try:
-        logger.info(f"Sending order via FAX from {get_remote_address(request)}")
+        logger.info(f"Sending order via FAX from user={user_id} ip={get_remote_address(request)}")
         # Generate PDF
         pdf_path = generate_pdf(
             items=order_request.items,
@@ -300,7 +310,7 @@ async def api_send_order(request: Request, order_request: OrderRequest):
         if os.path.exists(pdf_path):
             os.remove(pdf_path)
         
-        logger.info(f"Order sent via FAX: {result.success}")
+        logger.info(f"Order sent via FAX: {result.success} user={user_id}")
         
         # Return response with method_used
         return OrderSendResponse(
@@ -310,8 +320,8 @@ async def api_send_order(request: Request, order_request: OrderRequest):
             method_used="fax"
         )
     except Exception as e:
-        logger.error(f"Failed to send order via FAX: {str(e)}", exc_info=True)
-        raise HTTPException(status_code=500, detail=f"Failed to send order: {str(e)}")
+        logger.error(f"Failed to send order via FAX for user={user_id}: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail="注文の送信に失敗しました")
 
 
 class PreviewPdfRequest(BaseModel):
@@ -356,7 +366,7 @@ async def api_preview_pdf(request: PreviewPdfRequest):
 
 @app.post("/api/send-order-multi", response_model=OrderSendResponse)
 @limiter.limit("20/hour")  # Limit to 20 orders per hour
-async def api_send_order_multi(request: Request, order_request: MultiChannelOrderRequest):
+async def api_send_order_multi(request: Request, order_request: MultiChannelOrderRequest, user_id: str = Depends(verify_jwt)):
     """
     Send an order via multiple channels (FAX, Email, or LINE)
     
@@ -368,6 +378,7 @@ async def api_send_order_multi(request: Request, order_request: MultiChannelOrde
     - LINE: Sends rich Flex Message via LINE Messaging API
     """
     try:
+        logger.info(f"Sending order via {request.contact_method} from user={user_id}")
         # Convert items to the format expected by each service
         items_dict = [
             {
@@ -480,7 +491,8 @@ async def api_send_order_multi(request: Request, order_request: MultiChannelOrde
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"注文送信に失敗しました: {str(e)}")
+        logger.error(f"Failed to send multi-channel order for user={user_id}: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail="注文送信に失敗しました")
 
 
 # ===================
@@ -488,7 +500,7 @@ async def api_send_order_multi(request: Request, order_request: MultiChannelOrde
 # ===================
 
 @app.post("/api/generate-hanko", response_model=HankoResponse)
-async def api_generate_hanko(request: HankoRequest):
+async def api_generate_hanko(request: HankoRequest, user_id: str = Depends(verify_jwt)):
     """
     Generate a digital company seal (電子印鑑/hanko).
     
@@ -527,7 +539,7 @@ async def api_generate_hanko(request: HankoRequest):
         
         # Upload to Supabase Storage
         bucket_name = "company-assets"
-        file_name = f"hanko/{request.user_id}/{uuid.uuid4().hex}.png"
+        file_name = f"hanko/{user_id}/{uuid.uuid4().hex}.png"
         
         async with httpx.AsyncClient() as client:
             # Upload file
@@ -563,14 +575,15 @@ async def api_generate_hanko(request: HankoRequest):
                 )
             
             if upload_response.status_code not in [200, 201]:
-                raise Exception(f"Storage upload failed: {upload_response.text}")
+                logger.error(f"Storage upload failed: {upload_response.text}")
+                raise Exception("Storage upload failed")
             
             # Get public URL
             hanko_url = f"{supabase_url}/storage/v1/object/public/{bucket_name}/{file_name}"
             
             # Update user profile with hanko_url
             update_response = await client.patch(
-                f"{supabase_url}/rest/v1/profiles?id=eq.{request.user_id}",
+                f"{supabase_url}/rest/v1/profiles?id=eq.{user_id}",
                 headers={
                     "Authorization": f"Bearer {supabase_key}",
                     "apikey": supabase_key,
@@ -592,7 +605,8 @@ async def api_generate_hanko(request: HankoRequest):
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"印鑑の生成に失敗しました: {str(e)}")
+        logger.error(f"Failed to generate hanko for user={user_id}: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail="印鑑の生成に失敗しました")
 
 
 # ===================

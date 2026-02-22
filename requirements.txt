@@ -28,3 +28,6 @@ resend>=0.7.0
 
 # Rate Limiting
 slowapi>=0.1.9
+
+# JWT Authentication
+python-jose[cryptography]>=3.3.0

@@ -1,12 +1,17 @@
 # Analytics Router for ReplenMobile
 # Provides spending summaries and supplier analytics
 
-from fastapi import APIRouter, HTTPException, Header
+from fastapi import APIRouter, HTTPException, Header, Depends
 from pydantic import BaseModel
 from typing import List, Optional
 from datetime import datetime, timedelta
 import os
+import logging
 import httpx
+
+from auth import verify_jwt
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/analytics", tags=["analytics"])
 
@@ -70,14 +75,18 @@ class DailyTrendResponse(BaseModel):
 # ===================
 
 def get_supabase_client():
-    """Get Supabase URL and key from environment"""
+    """Get Supabase URL and anon key from environment.
+    
+    SECURITY: Always use ANON key. User JWT is forwarded separately
+    so Supabase RLS policies enforce per-user access control.
+    """
     supabase_url = os.getenv("SUPABASE_URL")
-    supabase_key = os.getenv("SUPABASE_SERVICE_KEY") or os.getenv("SUPABASE_ANON_KEY")
+    supabase_key = os.getenv("SUPABASE_ANON_KEY")
     
     if not supabase_url or not supabase_key:
         raise HTTPException(
             status_code=500,
-            detail="Supabase credentials not configured"
+            detail="サーバー設定エラー"  # "Server config error" - don't leak details
         )
     
     return supabase_url, supabase_key
@@ -100,6 +109,15 @@ def format_period_japanese():
     now = datetime.now()
     return f"{now.year}年{now.month}月"
 
+def _supabase_headers(supabase_key: str, user_jwt: str) -> dict:
+    """Build Supabase REST API headers with user JWT for RLS enforcement."""
+    return {
+        "Authorization": f"Bearer {user_jwt}",
+        "apikey": supabase_key,
+        "Content-Type": "application/json",
+    }
+
+
 # ===================
 # Endpoints
 # ===================
@@ -108,6 +126,7 @@ def format_period_japanese():
 async def get_monthly_summary(
     year: Optional[int] = None,
     month: Optional[int] = None,
+    user_id: str = Depends(verify_jwt),
     authorization: Optional[str] = Header(None)
 ):
     """
@@ -127,6 +146,9 @@ async def get_monthly_summary(
     try:
         supabase_url, supabase_key = get_supabase_client()
         
+        # Extract raw JWT token for forwarding to Supabase
+        user_jwt = authorization.split()[1] if authorization else supabase_key
+        
         # Default to current month if not specified
         now = datetime.now()
         target_year = year or now.year
@@ -144,7 +166,6 @@ async def get_monthly_summary(
         month_end = month_end_dt.isoformat()
         
         # Use service key for backend, or user's token if provided
-        auth_key = supabase_key
         
         async with httpx.AsyncClient() as client:
             # Fetch orders for current month
@@ -155,11 +176,7 @@ async def get_monthly_summary(
                     "created_at": f"gte.{month_start}",
                     "created_at": f"lt.{month_end}",
                 },
-                headers={
-                    "Authorization": f"Bearer {auth_key}",
-                    "apikey": supabase_key,
-                    "Content-Type": "application/json",
-                },
+                headers=_supabase_headers(supabase_key, user_jwt),
             )
             
             if response.status_code != 200:
@@ -169,17 +186,14 @@ async def get_monthly_summary(
                     params={
                         "select": "id,total_amount,supplier_id,created_at",
                     },
-                    headers={
-                        "Authorization": f"Bearer {auth_key}",
-                        "apikey": supabase_key,
-                        "Content-Type": "application/json",
-                    },
+                    headers=_supabase_headers(supabase_key, user_jwt),
                 )
             
             if response.status_code != 200:
+                logger.error(f"Supabase orders fetch failed: {response.status_code} {response.text}")
                 raise HTTPException(
                     status_code=response.status_code,
-                    detail=f"Failed to fetch orders: {response.text}"
+                    detail="注文データの取得に失敗しました"
                 )
             
             orders = response.json()
@@ -229,9 +243,10 @@ async def get_monthly_summary(
     except HTTPException:
         raise
     except Exception as e:
+        logger.error(f"Analytics summary error for user={user_id}: {str(e)}", exc_info=True)
         raise HTTPException(
             status_code=500,
-            detail=f"Failed to calculate analytics: {str(e)}"
+            detail="分析データの取得に失敗しました"
         )
 
 @router.get("/top-suppliers", response_model=TopSuppliersResponse)
@@ -240,6 +255,7 @@ async def get_top_suppliers(
     all_time: bool = False,
     year: Optional[int] = None,
     month: Optional[int] = None,
+    user_id: str = Depends(verify_jwt),
     authorization: Optional[str] = Header(None)
 ):
     """
@@ -255,7 +271,7 @@ async def get_top_suppliers(
     """
     try:
         supabase_url, supabase_key = get_supabase_client()
-        auth_key = supabase_key
+        user_jwt = authorization.split()[1] if authorization else supabase_key
         
         # Default to current month if not specified and not all_time
         now = datetime.now()
@@ -269,17 +285,14 @@ async def get_top_suppliers(
                 params={
                     "select": "id,total_amount,supplier_id,supplier_name,created_at",
                 },
-                headers={
-                    "Authorization": f"Bearer {auth_key}",
-                    "apikey": supabase_key,
-                    "Content-Type": "application/json",
-                },
+                headers=_supabase_headers(supabase_key, user_jwt),
             )
             
             if response.status_code != 200:
+                logger.error(f"Top suppliers fetch failed: {response.status_code} {response.text}")
                 raise HTTPException(
                     status_code=response.status_code,
-                    detail=f"Failed to fetch orders: {response.text}"
+                    detail="仕入先データの取得に失敗しました"
                 )
             
             orders = response.json()
@@ -361,14 +374,16 @@ async def get_top_suppliers(
     except HTTPException:
         raise
     except Exception as e:
+        logger.error(f"Top suppliers error for user={user_id}: {str(e)}", exc_info=True)
         raise HTTPException(
             status_code=500,
-            detail=f"Failed to get top suppliers: {str(e)}"
+            detail="仕入先データの取得に失敗しました"
         )
 
 @router.get("/frequent-products")
 async def get_frequent_products(
     limit: int = 10,
+    user_id: str = Depends(verify_jwt),
     authorization: Optional[str] = Header(None)
 ):
     """
@@ -378,7 +393,7 @@ async def get_frequent_products(
     """
     try:
         supabase_url, supabase_key = get_supabase_client()
-        auth_key = supabase_key
+        user_jwt = authorization.split()[1] if authorization else supabase_key
         
         async with httpx.AsyncClient() as client:
             # Fetch all order items
@@ -387,17 +402,14 @@ async def get_frequent_products(
                 params={
                     "select": "product_name,quantity",
                 },
-                headers={
-                    "Authorization": f"Bearer {auth_key}",
-                    "apikey": supabase_key,
-                    "Content-Type": "application/json",
-                },
+                headers=_supabase_headers(supabase_key, user_jwt),
             )
             
             if response.status_code != 200:
+                logger.error(f"Frequent products fetch failed: {response.status_code} {response.text}")
                 raise HTTPException(
                     status_code=response.status_code,
-                    detail=f"Failed to fetch order items: {response.text}"
+                    detail="商品データの取得に失敗しました"
                 )
             
             items = response.json()
@@ -433,14 +445,16 @@ async def get_frequent_products(
     except HTTPException:
         raise
     except Exception as e:
+        logger.error(f"Frequent products error for user={user_id}: {str(e)}", exc_info=True)
         raise HTTPException(
             status_code=500,
-            detail=f"Failed to get frequent products: {str(e)}"
+            detail="商品データの取得に失敗しました"
         )
 
 @router.get("/monthly-trend", response_model=MonthlyTrendResponse)
 async def get_monthly_trend(
     months: int = 6,
+    user_id: str = Depends(verify_jwt),
     authorization: Optional[str] = Header(None)
 ):
     """
@@ -454,7 +468,7 @@ async def get_monthly_trend(
     """
     try:
         supabase_url, supabase_key = get_supabase_client()
-        auth_key = supabase_key
+        user_jwt = authorization.split()[1] if authorization else supabase_key
         
         async with httpx.AsyncClient() as client:
             # Fetch all orders
@@ -464,17 +478,14 @@ async def get_monthly_trend(
                     "select": "id,total_amount,created_at",
                     "order": "created_at.asc",
                 },
-                headers={
-                    "Authorization": f"Bearer {auth_key}",
-                    "apikey": supabase_key,
-                    "Content-Type": "application/json",
-                },
+                headers=_supabase_headers(supabase_key, user_jwt),
             )
             
             if response.status_code != 200:
+                logger.error(f"Monthly trend fetch failed: {response.status_code} {response.text}")
                 raise HTTPException(
                     status_code=response.status_code,
-                    detail=f"Failed to fetch orders: {response.text}"
+                    detail="月次データの取得に失敗しました"
                 )
             
             orders = response.json()
@@ -539,15 +550,17 @@ async def get_monthly_trend(
     except HTTPException:
         raise
     except Exception as e:
+        logger.error(f"Monthly trend error for user={user_id}: {str(e)}", exc_info=True)
         raise HTTPException(
             status_code=500,
-            detail=f"Failed to get monthly trend: {str(e)}"
+            detail="月次データの取得に失敗しました"
         )
 
 @router.get("/daily-trend", response_model=DailyTrendResponse)
 async def get_daily_trend(
     year: Optional[int] = None,
     month: Optional[int] = None,
+    user_id: str = Depends(verify_jwt),
     authorization: Optional[str] = Header(None)
 ):
     """
@@ -575,7 +588,7 @@ async def get_daily_trend(
         daily_amounts = {day: 0 for day in range(1, days_in_month + 1)}
         
         supabase_url, supabase_key = get_supabase_client()
-        auth_key = supabase_key
+        user_jwt = authorization.split()[1] if authorization else supabase_key
         
         async with httpx.AsyncClient() as client:
             # Fetch all orders
@@ -584,17 +597,14 @@ async def get_daily_trend(
                 params={
                     "select": "id,total_amount,created_at",
                 },
-                headers={
-                    "Authorization": f"Bearer {auth_key}",
-                    "apikey": supabase_key,
-                    "Content-Type": "application/json",
-                },
+                headers=_supabase_headers(supabase_key, user_jwt),
             )
             
             if response.status_code != 200:
+                logger.error(f"Daily trend fetch failed: {response.status_code} {response.text}")
                 raise HTTPException(
                     status_code=response.status_code,
-                    detail=f"Failed to fetch orders: {response.text}"
+                    detail="日次データの取得に失敗しました"
                 )
             
             orders = response.json()
@@ -640,7 +650,8 @@ async def get_daily_trend(
     except HTTPException:
         raise
     except Exception as e:
+        logger.error(f"Daily trend error for user={user_id}: {str(e)}", exc_info=True)
         raise HTTPException(
             status_code=500,
-            detail=f"Failed to get daily trend: {str(e)}"
+            detail="日次データの取得に失敗しました"
         )
