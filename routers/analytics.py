@@ -168,18 +168,20 @@ async def get_monthly_summary(
         # Use service key for backend, or user's token if provided
         
         async with httpx.AsyncClient() as client:
-            # Fetch orders scoped to this user (explicit filter + RLS double protection)
+            # Fetch orders for current month
             response = await client.get(
                 f"{supabase_url}/rest/v1/orders",
-                params={
-                    "select": "id,total_amount,supplier_id,created_at",
-                    "user_id": f"eq.{user_id}",
-                },
+                params=[
+                    ("select", "id,total_amount,supplier_id,created_at"),
+                    ("user_id", f"eq.{user_id}"),
+                    ("created_at", f"gte.{month_start}"),
+                    ("created_at", f"lt.{month_end}"),
+                ],
                 headers=_supabase_headers(supabase_key, user_jwt),
             )
             
             if response.status_code != 200:
-                # If filtering fails, try fallback (still scoped to user)
+                # If filtering fails, try without date filter and filter in Python
                 response = await client.get(
                     f"{supabase_url}/rest/v1/orders",
                     params={
@@ -279,7 +281,7 @@ async def get_top_suppliers(
         target_month = month or now.month
         
         async with httpx.AsyncClient() as client:
-            # Fetch orders scoped to this user (explicit filter + RLS double protection)
+            # Fetch all orders with supplier info
             response = await client.get(
                 f"{supabase_url}/rest/v1/orders",
                 params={
@@ -397,12 +399,31 @@ async def get_frequent_products(
         user_jwt = authorization.split()[1] if authorization else supabase_key
         
         async with httpx.AsyncClient() as client:
-            # Fetch order items scoped to this user's orders via join
+            # First fetch this user's order IDs, then filter order_items
+            orders_resp = await client.get(
+                f"{supabase_url}/rest/v1/orders",
+                params={
+                    "select": "id",
+                    "user_id": f"eq.{user_id}",
+                },
+                headers=_supabase_headers(supabase_key, user_jwt),
+            )
+            if orders_resp.status_code != 200:
+                logger.error(f"Frequent products orders fetch failed: {orders_resp.status_code} {orders_resp.text}")
+                raise HTTPException(
+                    status_code=orders_resp.status_code,
+                    detail="商品データの取得に失敗しました"
+                )
+            user_order_ids = [o["id"] for o in orders_resp.json()]
+            if not user_order_ids:
+                return {"products": [], "period": "全期間"}
+
+            # Fetch all order items
             response = await client.get(
                 f"{supabase_url}/rest/v1/order_items",
                 params={
-                    "select": "product_name,quantity,orders!inner(user_id)",
-                    "orders.user_id": f"eq.{user_id}",
+                    "select": "product_name,quantity",
+                    "order_id": f"in.({','.join(user_order_ids)})",
                 },
                 headers=_supabase_headers(supabase_key, user_jwt),
             )
@@ -473,7 +494,7 @@ async def get_monthly_trend(
         user_jwt = authorization.split()[1] if authorization else supabase_key
         
         async with httpx.AsyncClient() as client:
-            # Fetch orders scoped to this user (explicit filter + RLS double protection)
+            # Fetch all orders
             response = await client.get(
                 f"{supabase_url}/rest/v1/orders",
                 params={
@@ -594,7 +615,7 @@ async def get_daily_trend(
         user_jwt = authorization.split()[1] if authorization else supabase_key
         
         async with httpx.AsyncClient() as client:
-            # Fetch orders scoped to this user (explicit filter + RLS double protection)
+            # Fetch all orders
             response = await client.get(
                 f"{supabase_url}/rest/v1/orders",
                 params={
