@@ -580,6 +580,232 @@ async def get_monthly_trend(
             detail="月次データの取得に失敗しました"
         )
 
+# ===================
+# Overview Endpoint — single HTTP call, all analytics at once
+# ===================
+
+class AnalyticsOverviewResponse(BaseModel):
+    """All analytics data in a single response"""
+    summary: AnalyticsSummary
+    top_suppliers_month: TopSuppliersResponse
+    top_suppliers_all_time: TopSuppliersResponse
+    frequent_products: dict  # {"products": [...], "period": str}
+    monthly_trend: MonthlyTrendResponse
+    daily_trend: DailyTrendResponse
+
+
+def _filter_orders_for_month(orders: list, target_year: int, target_month: int) -> list:
+    """Filter orders list to a specific year/month in Python."""
+    month_start = datetime(target_year, target_month, 1, 0, 0, 0)
+    if target_month == 12:
+        month_end = datetime(target_year + 1, 1, 1, 0, 0, 0)
+    else:
+        month_end = datetime(target_year, target_month + 1, 1, 0, 0, 0)
+
+    result = []
+    for order in orders:
+        raw = order.get("created_at")
+        if not raw:
+            continue
+        try:
+            if "Z" in raw:
+                dt = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+            else:
+                dt = datetime.fromisoformat(raw)
+            dt_naive = dt.replace(tzinfo=None)
+            if month_start <= dt_naive < month_end:
+                result.append(order)
+        except Exception:
+            continue
+    return result
+
+
+def _compute_summary(orders: list, target_year: int, target_month: int) -> AnalyticsSummary:
+    filtered = _filter_orders_for_month(orders, target_year, target_month)
+    total_spend = sum(o.get("total_amount", 0) or 0 for o in filtered)
+    order_count = len(filtered)
+    unique_suppliers = {o.get("supplier_id") for o in filtered if o.get("supplier_id")}
+    avg = total_spend // order_count if order_count > 0 else 0
+    return AnalyticsSummary(
+        total_spend=total_spend,
+        order_count=order_count,
+        supplier_count=len(unique_suppliers),
+        avg_order_value=avg,
+        period=f"{target_year}年{target_month}月",
+    )
+
+
+def _compute_top_suppliers(orders: list, limit: int, target_year: int, target_month: int, all_time: bool) -> TopSuppliersResponse:
+    working = orders if all_time else _filter_orders_for_month(orders, target_year, target_month)
+    stats: dict = {}
+    for order in working:
+        sid = order.get("supplier_id") or "unknown"
+        sname = order.get("supplier_name") or "不明な仕入先"
+        amount = order.get("total_amount", 0) or 0
+        if sid not in stats:
+            stats[sid] = {"supplier_id": sid, "name": sname, "total_spend": 0, "order_count": 0}
+        stats[sid]["total_spend"] += amount
+        stats[sid]["order_count"] += 1
+        if sname and sname != "不明な仕入先":
+            stats[sid]["name"] = sname
+    sorted_s = sorted(stats.values(), key=lambda x: x["total_spend"], reverse=True)[:limit]
+    return TopSuppliersResponse(
+        suppliers=[TopSupplier(**s) for s in sorted_s],
+        period=f"{target_year}年{target_month}月" if not all_time else "全期間",
+    )
+
+
+def _compute_frequent_products(items: list, limit: int) -> dict:
+    stats: dict = {}
+    for item in items:
+        name = item.get("product_name", "不明")
+        qty = item.get("quantity", 1) or 1
+        if name not in stats:
+            stats[name] = {"product_name": name, "total_quantity": 0, "order_count": 0}
+        stats[name]["total_quantity"] += qty
+        stats[name]["order_count"] += 1
+    sorted_p = sorted(stats.values(), key=lambda x: x["total_quantity"], reverse=True)[:limit]
+    return {"products": sorted_p, "period": "全期間"}
+
+
+def _compute_monthly_trend(orders: list, months: int) -> MonthlyTrendResponse:
+    if not orders:
+        return MonthlyTrendResponse(months=[], has_data=False)
+    monthly: dict = {}
+    for order in orders:
+        raw = order.get("created_at")
+        if not raw:
+            continue
+        try:
+            if "Z" in raw:
+                dt = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+            else:
+                dt = datetime.fromisoformat(raw)
+            key = dt.strftime("%Y-%m")
+            label = f"{dt.month}月"
+            if key not in monthly:
+                monthly[key] = {"month": key, "month_label": label, "total_spend": 0, "order_count": 0}
+            monthly[key]["total_spend"] += order.get("total_amount", 0) or 0
+            monthly[key]["order_count"] += 1
+        except Exception:
+            continue
+    sorted_m = sorted(monthly.values(), key=lambda x: x["month"])
+    if len(sorted_m) > months:
+        sorted_m = sorted_m[-months:]
+    return MonthlyTrendResponse(
+        months=[MonthlySpending(**m) for m in sorted_m],
+        has_data=len(sorted_m) > 0,
+    )
+
+
+def _compute_daily_trend(orders: list, target_year: int, target_month: int) -> DailyTrendResponse:
+    import calendar
+    days_in_month = calendar.monthrange(target_year, target_month)[1]
+    daily: dict = {d: 0 for d in range(1, days_in_month + 1)}
+    for order in orders:
+        raw = order.get("created_at")
+        if not raw:
+            continue
+        try:
+            if "Z" in raw:
+                dt = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+            else:
+                dt = datetime.fromisoformat(raw)
+            if dt.year == target_year and dt.month == target_month:
+                daily[dt.day] += order.get("total_amount", 0) or 0
+        except Exception:
+            continue
+    days_list = [DailySpend(day=d, amount=a) for d, a in sorted(daily.items())]
+    total = sum(d.amount for d in days_list)
+    return DailyTrendResponse(
+        days=days_list,
+        year=target_year,
+        month=target_month,
+        total_spend=total,
+        has_data=total > 0,
+    )
+
+
+@router.get("/overview", response_model=AnalyticsOverviewResponse)
+async def get_analytics_overview(
+    year: Optional[int] = None,
+    month: Optional[int] = None,
+    months_trend: int = 6,
+    limit_suppliers: int = 5,
+    limit_products: int = 10,
+    user_id: str = Depends(verify_jwt),
+    authorization: Optional[str] = Header(None),
+):
+    """
+    Combined analytics overview — fetches all data in 2 parallel Supabase
+    queries instead of 6 serial HTTP calls. Returns summary, top suppliers
+    (month + all-time), frequent products, monthly trend, and daily trend.
+    """
+    try:
+        supabase_url, supabase_key = get_supabase_client()
+        user_jwt = authorization.split()[1] if authorization else supabase_key
+        headers = _supabase_headers(supabase_key, user_jwt)
+
+        now = datetime.now()
+        target_year = year or now.year
+        target_month = month or now.month
+
+        async with httpx.AsyncClient() as client:
+            # Two parallel fetches: orders + order_items
+            import asyncio
+
+            orders_future = client.get(
+                f"{supabase_url}/rest/v1/orders",
+                params={
+                    "select": "id,total_amount,supplier_id,supplier_name,created_at",
+                    "user_id": f"eq.{user_id}",
+                },
+                headers=headers,
+            )
+            items_future = client.get(
+                f"{supabase_url}/rest/v1/order_items",
+                params={
+                    "select": "order_id,product_name,quantity",
+                    # Filtered in Python after joining with user's order IDs
+                },
+                headers=headers,
+            )
+
+            orders_resp, items_resp = await asyncio.gather(orders_future, items_future)
+
+        if orders_resp.status_code != 200:
+            logger.error(f"Overview orders fetch failed: {orders_resp.status_code}")
+            raise HTTPException(status_code=502, detail="注文データの取得に失敗しました")
+
+        orders = orders_resp.json()
+        user_order_ids = {o["id"] for o in orders}
+
+        # Filter order_items to this user's orders only (RLS enforces this
+        # but we double-check in Python for defence-in-depth)
+        raw_items: list = []
+        if items_resp.status_code == 200:
+            raw_items = [i for i in items_resp.json() if i.get("order_id") in user_order_ids]
+
+        return AnalyticsOverviewResponse(
+            summary=_compute_summary(orders, target_year, target_month),
+            top_suppliers_month=_compute_top_suppliers(
+                orders, limit_suppliers, target_year, target_month, all_time=False
+            ),
+            top_suppliers_all_time=_compute_top_suppliers(
+                orders, limit_suppliers, target_year, target_month, all_time=True
+            ),
+            frequent_products=_compute_frequent_products(raw_items, limit_products),
+            monthly_trend=_compute_monthly_trend(orders, months_trend),
+            daily_trend=_compute_daily_trend(orders, target_year, target_month),
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Analytics overview error for user={user_id}: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail="分析データの取得に失敗しました")
+
+
 @router.get("/daily-trend", response_model=DailyTrendResponse)
 async def get_daily_trend(
     year: Optional[int] = None,
