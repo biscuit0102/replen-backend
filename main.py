@@ -383,7 +383,7 @@ async def api_send_order_multi(request: Request, order_request: MultiChannelOrde
     - LINE: Sends rich Flex Message via LINE Messaging API
     """
     try:
-        logger.info(f"Sending order via {request.contact_method} from user={user_id}")
+        logger.info(f"Sending order via {order_request.contact_method} from user={user_id}")
         # Convert items to the format expected by each service
         items_dict = [
             {
@@ -393,29 +393,29 @@ async def api_send_order_multi(request: Request, order_request: MultiChannelOrde
                 "barcode": item.barcode,
                 "unit": item.unit
             }
-            for item in request.items
+            for item in order_request.items
         ]
         
         # Route to appropriate service based on contact method
-        if request.contact_method == "fax":
+        if order_request.contact_method == "fax":
             # Validate FAX number
-            if not request.fax_number:
+            if not order_request.fax_number:
                 raise HTTPException(status_code=400, detail="FAX番号が必要です")
             
             # Generate PDF
             pdf_path = generate_pdf(
-                items=request.items,
-                supplier_name=request.supplier_name,
-                hanko_url=request.hanko_url,
-                note=request.note,
-                sender_name=request.sender_name,
-                sender_phone=request.sender_phone,
+                items=order_request.items,
+                supplier_name=order_request.supplier_name,
+                hanko_url=order_request.hanko_url,
+                note=order_request.note,
+                sender_name=order_request.sender_name,
+                sender_phone=order_request.sender_phone,
             )
             
             # Send fax
             result = send_fax(
                 pdf_path=pdf_path,
-                fax_number=request.fax_number
+                fax_number=order_request.fax_number
             )
             
             # Clean up PDF file
@@ -429,9 +429,9 @@ async def api_send_order_multi(request: Request, order_request: MultiChannelOrde
                 method_used="fax"
             )
             
-        elif request.contact_method == "email":
+        elif order_request.contact_method == "email":
             # Validate email
-            if not request.email:
+            if not order_request.email:
                 raise HTTPException(status_code=400, detail="メールアドレスが必要です")
             
             # Convert items for email service
@@ -442,19 +442,19 @@ async def api_send_order_multi(request: Request, order_request: MultiChannelOrde
                     quantity=item.quantity,
                     barcode=item.barcode
                 )
-                for item in request.items
+                for item in order_request.items
             ]
             
             # Generate PDF for attachment (optional)
             pdf_path = None
             try:
                 pdf_path = generate_pdf(
-                    items=request.items,
-                    supplier_name=request.supplier_name,
-                    hanko_url=request.hanko_url,
-                    note=request.note,
-                    sender_name=request.sender_name,
-                    sender_phone=request.sender_phone,
+                    items=order_request.items,
+                    supplier_name=order_request.supplier_name,
+                    hanko_url=order_request.hanko_url,
+                    note=order_request.note,
+                    sender_name=order_request.sender_name,
+                    sender_phone=order_request.sender_phone,
                 )
             except Exception:
                 pass  # PDF is optional for email
@@ -462,10 +462,10 @@ async def api_send_order_multi(request: Request, order_request: MultiChannelOrde
             # Send email
             result = await send_order_email(
                 items=email_items,
-                supplier_name=request.supplier_name,
-                to_email=request.email,
+                supplier_name=order_request.supplier_name,
+                to_email=order_request.email,
                 pdf_path=pdf_path,
-                note=request.note
+                note=order_request.note
             )
             
             # Clean up PDF file
@@ -479,7 +479,7 @@ async def api_send_order_multi(request: Request, order_request: MultiChannelOrde
                 method_used="email"
             )
             
-        elif request.contact_method == "line":
+        elif order_request.contact_method == "line":
             # LINE is handled by Flutter app via Deep Link
             # This endpoint should NOT be called for LINE
             # Return informative message in case it's called by mistake
@@ -491,7 +491,7 @@ async def api_send_order_multi(request: Request, order_request: MultiChannelOrde
             )
             
         else:
-            raise HTTPException(status_code=400, detail=f"未対応の送信方法: {request.contact_method}")
+            raise HTTPException(status_code=400, detail=f"未対応の送信方法: {order_request.contact_method}")
             
     except HTTPException:
         raise
