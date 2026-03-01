@@ -83,7 +83,17 @@ def generate_pdf(
     # Create temporary file for PDF
     pdf_filename = f"order_{uuid.uuid4().hex[:8]}.pdf"
     pdf_path = os.path.join(tempfile.gettempdir(), pdf_filename)
-    
+
+    # SECURITY: Escape all user-supplied strings before they enter ReportLab
+    # Paragraph() parses its content as XML — unescaped '<', '>', '&' cause XMLSyntaxError
+    # and could be used to inject ReportLab markup tags.
+    import html as _html
+    safe_supplier_name = _html.escape(supplier_name) if supplier_name else None
+    safe_sender_name   = _html.escape(sender_name)   if sender_name   else None
+    safe_sender_phone  = _html.escape(sender_phone)  if sender_phone  else None
+    raw_note           = note.strip() if note and note.strip() else "特になし"
+    safe_note          = _html.escape(raw_note)
+
     # Create PDF document
     doc = SimpleDocTemplate(
         pdf_path,
@@ -152,19 +162,19 @@ def generate_pdf(
     
     # Build sender block (right-aligned)
     sender_block = f"<b>発注元:</b><br/>"
-    if sender_name:
-        sender_block += f"<b>{sender_name}</b><br/>"
+    if safe_sender_name:
+        sender_block += f"<b>{safe_sender_name}</b><br/>"
     else:
         sender_block += "<b>ReplenMobile ユーザー</b><br/>"
-    if sender_phone:
-        sender_block += f"TEL: {sender_phone}<br/>"
+    if safe_sender_phone:
+        sender_block += f"TEL: {safe_sender_phone}<br/>"
     sender_block += f"日付: {today}"
     
     # Create a 2-column layout: Recipient (left) | Sender (right)
     # This ensures both are visible at a glance
     recipient_text = ""
-    if supplier_name:
-        recipient_text = f"<b>{supplier_name} 御中</b>"
+    if safe_supplier_name:
+        recipient_text = f"<b>{safe_supplier_name} 御中</b>"
     
     header_table = Table(
         [[Paragraph(recipient_text, recipient_style), Paragraph(sender_block, sender_style)]],
@@ -258,7 +268,8 @@ def generate_pdf(
     # ===================
     # NOTES BOX (備考欄)
     # ===================
-    note_content = note.strip() if note and note.strip() else "特になし"
+    # safe_note was already computed and escaped above
+    note_content = safe_note
     
     note_content_style = ParagraphStyle(
         'NoteContent',
@@ -300,6 +311,42 @@ def generate_pdf(
     return pdf_path
 
 
+def _is_allowed_hanko_url(url: str) -> bool:
+    """
+    Validate that a hanko URL points to the expected Supabase Storage bucket.
+    This prevents SSRF attacks where an attacker could supply an internal
+    network address or AWS metadata endpoint as the hanko_url.
+    """
+    from urllib.parse import urlparse
+    try:
+        parsed = urlparse(url)
+        # Must be HTTPS
+        if parsed.scheme != "https":
+            return False
+        # Must be the configured Supabase project domain
+        supabase_url = os.getenv("SUPABASE_URL", "")
+        if supabase_url:
+            from urllib.parse import urlparse as _up
+            allowed_host = _up(supabase_url).hostname or ""
+        else:
+            # Fallback: accept any *.supabase.co storage URL
+            allowed_host = ""
+        host = parsed.hostname or ""
+        if allowed_host:
+            if host != allowed_host:
+                return False
+        else:
+            # Fallback check: must end with .supabase.co
+            if not host.endswith(".supabase.co"):
+                return False
+        # Must be under the public storage path
+        if not parsed.path.startswith("/storage/v1/object/public/"):
+            return False
+        return True
+    except Exception:
+        return False
+
+
 def _add_hanko_stamp(pdf_path: str, hanko_url: str):
     """
     Add hanko stamp to PDF (overlay on right side of sender name).
@@ -312,8 +359,13 @@ def _add_hanko_stamp(pdf_path: str, hanko_url: str):
     from reportlab.lib.pagesizes import A4
     import io
 
+    # SECURITY: Validate URL before fetching to prevent SSRF
+    if not _is_allowed_hanko_url(hanko_url):
+        print(f"SECURITY: Rejected hanko_url with disallowed host/scheme: {hanko_url}")
+        return
+
     # Download hanko image
-    response = requests.get(hanko_url)
+    response = requests.get(hanko_url, timeout=10)
     if response.status_code != 200:
         print(f"Failed to download hanko image: {hanko_url}")
         return

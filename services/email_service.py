@@ -46,20 +46,28 @@ def generate_order_html(
     """
     Generate HTML email body for the order.
     """
+    import html as _html
     from datetime import datetime
     
     today = datetime.now().strftime("%Y年%m月%d日")
     total = sum(item.price * item.quantity for item in items)
-    note_content = note.strip() if note and note.strip() else "特になし"
+
+    # SECURITY: Escape all user-controlled strings before HTML interpolation.
+    # Without this, a malicious item name / supplier name / note could inject
+    # arbitrary HTML tags that break the email layout or reputation-flag it.
+    safe_supplier = _html.escape(supplier_name) if supplier_name else None
+    raw_note = note.strip() if note and note.strip() else "特になし"
+    note_content = _html.escape(raw_note)
     
     # Build items table rows
     items_html = ""
     for i, item in enumerate(items, 1):
         subtotal = item.price * item.quantity
+        safe_name = _html.escape(item.name)
         items_html += f"""
         <tr>
             <td style="padding: 12px; border-bottom: 1px solid #eee; text-align: center;">{i}</td>
-            <td style="padding: 12px; border-bottom: 1px solid #eee;">{item.name}</td>
+            <td style="padding: 12px; border-bottom: 1px solid #eee;">{safe_name}</td>
             <td style="padding: 12px; border-bottom: 1px solid #eee; text-align: right;">¥{item.price:,}</td>
             <td style="padding: 12px; border-bottom: 1px solid #eee; text-align: center;">{item.quantity}</td>
             <td style="padding: 12px; border-bottom: 1px solid #eee; text-align: right;">¥{subtotal:,}</td>
@@ -84,7 +92,7 @@ def generate_order_html(
                 <tr>
                     <td><strong>日付:</strong> {today}</td>
                 </tr>
-                {"<tr><td><strong>宛先:</strong> " + supplier_name + " 御中</td></tr>" if supplier_name else ""}
+                {"<tr><td><strong>宛先:</strong> " + safe_supplier + " 御中</td></tr>" if safe_supplier else ""}
             </table>
         </div>
         

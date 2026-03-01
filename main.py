@@ -3,6 +3,7 @@
 
 from fastapi import FastAPI, HTTPException, Request, Depends
 from fastapi.responses import FileResponse
+from starlette.background import BackgroundTask
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import List, Optional, Literal
@@ -348,12 +349,20 @@ async def api_preview_pdf(request: Request, pdf_request: PreviewPdfRequest, user
             sender_phone=pdf_request.sender_phone,
         )
         
-        # Return PDF file
+        # Return PDF file and schedule temp file cleanup after response is sent.
+        # Without this, temp PDFs accumulate indefinitely on the container filesystem.
+        def _cleanup(path: str) -> None:
+            try:
+                if os.path.exists(path):
+                    os.remove(path)
+            except Exception as exc:
+                logger.warning(f"Could not delete temp PDF {path}: {exc}")
+
         return FileResponse(
             path=pdf_path,
             media_type="application/pdf",
             filename=f"order_{pdf_request.supplier_name or 'preview'}.pdf",
-            background=None  # Don't delete file in background
+            background=BackgroundTask(_cleanup, pdf_path),
         )
     except Exception as e:
         logger.error(f"Failed to generate PDF for user={user_id}: {str(e)}", exc_info=True)

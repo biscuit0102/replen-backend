@@ -1,7 +1,7 @@
 # Analytics Router for ReplenMobile
 # Provides spending summaries and supplier analytics
 
-from fastapi import APIRouter, HTTPException, Header, Depends
+from fastapi import APIRouter, HTTPException, Header, Depends, Query
 from pydantic import BaseModel
 from typing import List, Optional
 from datetime import datetime, timedelta
@@ -124,8 +124,8 @@ def _supabase_headers(supabase_key: str, user_jwt: str) -> dict:
 
 @router.get("/summary", response_model=AnalyticsSummary)
 async def get_monthly_summary(
-    year: Optional[int] = None,
-    month: Optional[int] = None,
+    year: Optional[int] = Query(default=None, ge=2020, le=2100),
+    month: Optional[int] = Query(default=None, ge=1, le=12),
     user_id: str = Depends(verify_jwt),
     authorization: Optional[str] = Header(None)
 ):
@@ -253,10 +253,10 @@ async def get_monthly_summary(
 
 @router.get("/top-suppliers", response_model=TopSuppliersResponse)
 async def get_top_suppliers(
-    limit: int = 5,
+    limit: int = Query(default=5, ge=1, le=100),
     all_time: bool = False,
-    year: Optional[int] = None,
-    month: Optional[int] = None,
+    year: Optional[int] = Query(default=None, ge=2020, le=2100),
+    month: Optional[int] = Query(default=None, ge=1, le=12),
     user_id: str = Depends(verify_jwt),
     authorization: Optional[str] = Header(None)
 ):
@@ -385,7 +385,7 @@ async def get_top_suppliers(
 
 @router.get("/frequent-products")
 async def get_frequent_products(
-    limit: int = 10,
+    limit: int = Query(default=10, ge=1, le=100),
     user_id: str = Depends(verify_jwt),
     authorization: Optional[str] = Header(None)
 ):
@@ -476,7 +476,7 @@ async def get_frequent_products(
 
 @router.get("/monthly-trend", response_model=MonthlyTrendResponse)
 async def get_monthly_trend(
-    months: int = 6,
+    months: int = Query(default=6, ge=1, le=24),
     user_id: str = Depends(verify_jwt),
     authorization: Optional[str] = Header(None)
 ):
@@ -728,11 +728,11 @@ def _compute_daily_trend(orders: list, target_year: int, target_month: int) -> D
 
 @router.get("/overview", response_model=AnalyticsOverviewResponse)
 async def get_analytics_overview(
-    year: Optional[int] = None,
-    month: Optional[int] = None,
-    months_trend: int = 6,
-    limit_suppliers: int = 5,
-    limit_products: int = 10,
+    year: Optional[int] = Query(default=None, ge=2020, le=2100),
+    month: Optional[int] = Query(default=None, ge=1, le=12),
+    months_trend: int = Query(default=6, ge=1, le=24),
+    limit_suppliers: int = Query(default=5, ge=1, le=100),
+    limit_products: int = Query(default=10, ge=1, le=100),
     user_id: str = Depends(verify_jwt),
     authorization: Optional[str] = Header(None),
 ):
@@ -808,8 +808,8 @@ async def get_analytics_overview(
 
 @router.get("/daily-trend", response_model=DailyTrendResponse)
 async def get_daily_trend(
-    year: Optional[int] = None,
-    month: Optional[int] = None,
+    year: Optional[int] = Query(default=None, ge=2020, le=2100),
+    month: Optional[int] = Query(default=None, ge=1, le=12),
     user_id: str = Depends(verify_jwt),
     authorization: Optional[str] = Header(None)
 ):
